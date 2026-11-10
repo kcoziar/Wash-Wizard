@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defaultSettings, newDraft } from './defaults';
+import { CORE_KINDS, RATED_KINDS, defaultRate, defaultSettings, newDraft } from './defaults';
 import { withDraft } from './jobState';
 import { isSafeLogo } from './logo';
 import type { Draft, Job, Ledger, Line, Meta, Outcome, Question, QuoteDoc, Revision, SavedService, Settings, ShareRecord, TimeEntry } from './types';
@@ -89,10 +89,10 @@ export function mergeDefaults<T>(defaults: T, raw: unknown): T {
 
 const STATES = ['known_value', 'known_zero', 'unknown', 'not_applicable'] as const;
 const SOURCES = ['operator', 'customer', 'confirmed', 'saved', 'derived', 'sample', 'record'] as const;
-const KINDS = ['driveway', 'walkway', 'patio', 'stairs', 'custom'] as const;
+const KINDS = ['driveway', 'walkway', 'patio', 'stairs', 'house', 'roof', 'deck', 'fence', 'gutters', 'custom'] as const;
 const QTY_TYPES = ['area', 'linear', 'each', 'hours', 'flat'] as const;
 const UNITS = ['sqft', 'sqm', 'ft', 'm', 'each', 'hour', 'job'] as const;
-const QUESTION_KINDS = ['combined_area', 'missing_qty', 'amount_meaning', 'other_service', 'condition', 'extra_measure', 'scope'] as const;
+const QUESTION_KINDS = ['combined_area', 'missing_qty', 'amount_meaning', 'other_service', 'condition', 'extra_measure', 'scope', 'size_meaning'] as const;
 const MAX_TEXT = 20_000;
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
@@ -238,7 +238,14 @@ export function normalizeSettings(raw: unknown): Settings {
   const base = defaultSettings();
   const s = mergeDefaults(base, raw);
   fixFields(s, base, SETTINGS_ENUMS);
-  for (const k of Object.keys(base.rates) as (keyof Settings['rates'])[]) s.rates[k] = { ...s.rates[k], kind: k };
+  const savedRates = isObj(raw) && isObj(raw.rates) ? raw.rates : {};
+  for (const k of Object.keys(base.rates) as (keyof Settings['rates'])[]) {
+    // A service added after these settings were saved starts blank, measured in the operator's units.
+    s.rates[k] = isObj(savedRates[k]) ? { ...s.rates[k], kind: k } : defaultRate(k, s.units);
+  }
+  const listed = isObj(raw) && Array.isArray(raw.services) ? raw.services : [];
+  const services = RATED_KINDS.filter((k) => listed.includes(k));
+  s.services = services.length ? services : [...CORE_KINDS];
   s.deposit.kind = oneOf(s.deposit.kind, ['none', 'percent', 'fixed'] as const, base.deposit.kind);
   s.business.logo = isSafeLogo(s.business.logo) ? s.business.logo : null;
   s.customServices = (isObj(raw) && Array.isArray(raw.customServices) ? raw.customServices : [])

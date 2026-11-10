@@ -3,7 +3,15 @@ import { RATED_KINDS, SERVICE_META, unitFor } from './defaults';
 import type { RatedKind, Settings } from './types';
 
 export type RateAnswer = { mode: 'rate' | 'flat'; value: string };
-export type SetupAnswers = { rates: Record<RatedKind, RateAnswer>; minimum: string; target: string; name: string; phone: string };
+export type SetupAnswers = {
+  /** Built-in services picked on the first step. They lead on Home; the rest stay under "More". */
+  services?: RatedKind[];
+  rates: Partial<Record<RatedKind, RateAnswer>>;
+  minimum: string;
+  target: string;
+  name: string;
+  phone: string;
+};
 
 /** Setup steps, in order. A skipped step saves nothing. */
 export const SETUP_STEP = { services: 0, rates: 1, minimumAndTarget: 2, business: 3 } as const;
@@ -19,6 +27,8 @@ const positive = (t: string) => {
  */
 export function applyAnswers(base: Settings, a: SetupAnswers, skipped: ReadonlySet<number>): Settings {
   const next: Settings = { ...base, rates: { ...base.rates } };
+  const picked = RATED_KINDS.filter((k) => a.services?.includes(k));
+  if (!skipped.has(SETUP_STEP.services) && picked.length) next.services = picked;
   if (!skipped.has(SETUP_STEP.rates)) {
     for (const k of RATED_KINDS) {
       const ans = a.rates[k];

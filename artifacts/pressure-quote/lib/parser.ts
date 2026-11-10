@@ -57,6 +57,8 @@ export interface Measure extends Span {
   combinedHint: boolean;
   /** "excluding 100 sq ft": an area to take away. */
   exclusion: boolean;
+  /** Where the fence or gutters this length belongs to starts ("150 ft of 6 ft privacy fence"). */
+  ownerAt?: number;
   text: string;
 }
 
@@ -280,7 +282,7 @@ const TAIL =
 const ADDRESS_CAP = new RegExp(`\\b\\d{1,6}[A-Za-z]?\\s+(?:${DIR}\\s+)?(?:(?:[A-Z][A-Za-z'.-]*|\\d+(?:st|nd|rd|th))\\s+){1,4}?${SUFFIX_CI}\\b(?:\\s+${SUFFIX_CI}\\b)?\\.?${TAIL}`, 'g');
 const ADDRESS_LOWER = new RegExp(`\\b\\d{1,6}\\s+(?:[a-z][a-z'.-]*\\s+){1,3}?${SUFFIX_I}\\b(?:\\s+${SUFFIX_I}\\b)?\\.?${TAIL}`, 'gi');
 const ADDRESS_CUE = /\b(?:at|address(?:\s+is)?|located\s+at|live\s+at|lives\s+at|house\s+(?:is\s+)?at|home\s+(?:is\s+)?at|property\s+(?:is\s+)?at|on)\s*:?\s*$/i;
-const ADDRESS_STOP = /\b(?:ft|feet|foot|sq|square|steps?|stairs?|x|by|minutes?|hours?|about|around|maybe|and|or|the|of|wide|long|total|driveway|patio|walkway|sidewalk|path)\b/i;
+const ADDRESS_STOP = /\b(?:ft|feet|foot|sq|square|steps?|stairs?|x|by|minutes?|hours?|about|around|maybe|and|or|the|of|wide|long|total|driveway|patio|walkway|sidewalk|path|deck|fence|roof|gutters?|siding)\b/i;
 
 /** Trims a trailing ", Thanks" that only looked like a city, then trailing punctuation. */
 function addressSpan(m: RegExpExecArray): Span {
@@ -368,17 +370,38 @@ const LOC_ADJ = 'front|back|rear|side(?!\\s?walk)|upper|lower|top|bottom|north|s
 const STAIR_PLACE = 'patio|deck|garage|basement|driveway|porch';
 const MATERIAL = 'concrete|asphalt|pavers?|brick|stone|flagstone|cement|tile|stamped|aggregate|gravel';
 
-const KIND_NOUNS: { kind: RatedKind; nouns: string; place: string }[] = [
+const AFTER_WASH = '(?<=\\b(?:wash|washed|washing|clean|cleaned|cleaning|rinse|rinsed)\\s+(?:off\\s+|down\\s+)?(?:the\\s+|our\\s+|my\\s+)?)';
+const OTHER_SURFACE = '(?:the\\s+|our\\s+|my\\s+)?(?:roofs?|decks?|fenc|gutters?|patios?|drive\\s?ways?|walk\\s?ways?|siding)';
+
+/** Order matters: an earlier kind claims the words first ("deck stairs" are stairs, a "pool deck" is a patio). */
+const KIND_NOUNS: { kind: RatedKind; nouns: string; place: string; material?: string }[] = [
   { kind: 'stairs', nouns: 'stair\\s?ways?|stair\\s?cases?|stairs?|steps?|stoops?', place: `${LOC_ADJ}|${STAIR_PLACE}` },
   { kind: 'driveway', nouns: 'drive\\s?ways?', place: LOC_ADJ },
   { kind: 'patio', nouns: 'pool\\s+decks?|pool\\s+areas?|patios?|courtyards?|terraces?|lanais?', place: LOC_ADJ },
   { kind: 'walkway', nouns: 'walk\\s?ways?|side\\s?walks?|walk\\s?paths?|path\\s?ways?|paths?|walks?', place: LOC_ADJ },
+  {
+    kind: 'house',
+    // "soft wash the roof" is a way of cleaning the roof, not a house wash.
+    nouns: `house\\s?wash(?:ing|es)?|soft\\s?wash(?:ing)?(?!\\s+${OTHER_SURFACE})|siding|(?:house|home)\\s+exterior|exterior\\s+of\\s+(?:the|our|my)\\s+(?:house|home)|${AFTER_WASH}(?:house|home)`,
+    place: LOC_ADJ,
+    material: 'vinyl|stucco|brick|wood|hardie|fiber\\s?cement|aluminum|cedar',
+  },
+  { kind: 'roof', nouns: 'roofs?|roof\\s?tops?', place: LOC_ADJ, material: 'shingle|asphalt|tile|metal|clay|slate|cedar|shake' },
+  { kind: 'deck', nouns: 'decks?', place: LOC_ADJ, material: 'wood(?:en)?|composite|trex|cedar|redwood|pressure[-\\s]treated' },
+  { kind: 'fence', nouns: 'fence\\s?lines?|fenc(?:e|es|ing)', place: LOC_ADJ, material: 'wood(?:en)?|vinyl|cedar|privacy|picket|chain[-\\s]?link|metal|aluminum|composite|wrought\\s+iron' },
+  { kind: 'gutters', nouns: 'gutters?', place: LOC_ADJ, material: 'aluminum|metal|vinyl|copper|seamless' },
 ];
+
+/** Services measured along their length. */
+const LINEAR_KINDS: RatedKind[] = ['fence', 'gutters'];
+/** A home's floor area, its siding and its roof are different sizes, so an area given loosely is asked about. */
+const HOME_KINDS: RatedKind[] = ['house', 'roof'];
 
 function nounGroup(kind: RatedKind, noun: string): string {
   const n = noun.toLowerCase().replace(/\s+/g, '');
   if (kind === 'walkway') return /^sidewalk/.test(n) ? 'sidewalk' : 'walkway';
   if (kind === 'patio') return /^pool/.test(n) ? 'pooldeck' : 'patio';
+  // "house wash" and "siding" in one message are one service.
   return kind;
 }
 
@@ -389,8 +412,8 @@ const PHANTOM_BEFORE = /\b(?:next|first|few|following|these|those|what|any|furth
 
 function findMentions(text: string, blocked: Span[]): Mention[] {
   const out: Mention[] = [];
-  for (const { kind, nouns, place } of KIND_NOUNS) {
-    const re = new RegExp(`\\b(?:(${LOC_ADJ})\\s+(?:and|&|or|\\/)\\s+)?(?:(${place})\\s+)?(?:(${MATERIAL})\\s+)?(${nouns})\\b`, 'gi');
+  for (const { kind, nouns, place, material: mat } of KIND_NOUNS) {
+    const re = new RegExp(`\\b(?:(${LOC_ADJ})\\s+(?:and|&|or|\\/)\\s+)?(?:(${place})\\s+)?(?:(${mat ?? MATERIAL})\\s+)?(${nouns})\\b`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       const index = m.index;
@@ -435,7 +458,10 @@ function findMentions(text: string, blocked: Span[]): Mention[] {
 
 function surfaceName(m: Mention): string {
   const t = m.label.trim().replace(/\s+/g, ' ');
-  const name = m.kind === 'stairs' ? t : t.replace(/s$/i, '');
+  // "wash the house" names the service, not a surface called "House".
+  if (m.kind === 'house' && /(?:^|\s)(?:house|home)$/i.test(t) && !m.qualifier) return SERVICE_META.house.name;
+  if (m.kind === 'house' && /wash(?:ing|es)?$/i.test(t)) return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase().replace(/(?:ing|es)$/, '');
+  const name = m.kind === 'stairs' || m.kind === 'gutters' ? t : t.replace(/s$/i, '');
   return name ? name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() : SERVICE_META[m.kind].name;
 }
 
@@ -510,6 +536,36 @@ function findMeasures(text: string, units: UnitSystem, blocked: Span[]): Measure
     push({ ...base, type: 'count', value: m[1], index: m.index, end: m.index + m[0].length, text: m[0] });
   }
   return out.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * "150 ft of fence", "gutters are about 180 feet": a plain length is read only next to a fence or
+ * gutters, and never when it describes height ("6 ft privacy fence", "6 ft tall").
+ */
+function findRuns(text: string, units: UnitSystem, mentions: Mention[], blocked: Span[]): Measure[] {
+  const dflt: LenUnit = units === 'metric' ? 'm' : 'ft';
+  const runs = mentions.filter((x) => LINEAR_KINDS.includes(x.kind));
+  if (!runs.length) return [];
+  const out: Measure[] = [];
+  const re = new RegExp(`${AREA_NUM}\\s*(ft\\.?|feet|foot|m\\b|meters?|metres?)(?!\\s*(?:x|\\u00D7|by|\\*|long|wide|deep|tall|high|sq|square|\\d))`, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const index = m.index;
+    const end = index + m[0].length;
+    if (blocked.some((b) => overlaps(b, { index, end }))) continue;
+    const [s, e] = sentenceBounds(text, index);
+    const after = text.slice(end, e);
+    const of = /^\s+of\b/i.test(after);
+    const tail = runs.find((x) => x.index >= end && x.end <= e && x.index - end <= 40);
+    const head = runs.filter((x) => x.end <= index && x.index >= s && index - x.end <= 40).pop();
+    if (!(of && tail) && !head) continue;
+    const owner = of && tail ? tail : (head as Mention);
+    const value = m[1].replace(/,/g, '');
+    const aUnit = lenUnit(m[2], dflt);
+    const [cs, ce] = sentenceBounds(text, index);
+    out.push({ type: 'length', a: value, b: '', aUnit, bUnit: aUnit, longSide: 'a', value: '', areaUnit: units === 'metric' ? 'sqm' : 'sqft', index, end, text: m[0], approximate: APPROX.test(text.slice(Math.max(s, index - 24), index)), combinedHint: COMBINED.test(text.slice(cs, ce)), exclusion: EXCLUDE_CUE.test(text.slice(s, index)), ownerAt: owner.index });
+  }
+  return out;
 }
 
 const U = { ft: 'ft', m: 'm' } as const;
@@ -637,6 +693,8 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
   const contact = findContact(src);
   const mentions = findMentions(text, contact.spans);
   const measures = findMeasures(text, units, contact.spans);
+  measures.push(...findRuns(text, units, mentions, [...contact.spans, ...measures]));
+  measures.sort((a, b) => a.index - b.index);
   const questions: ParsedQuestion[] = [];
   const who = mode === 'operator' ? 'Your notes' : 'The customer';
 
@@ -689,7 +747,39 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     });
   };
 
+  const isHome = (i: number) => HOME_KINDS.includes(services[i].kind as RatedKind);
+  /** "roof is about 2,400 sq ft" or "3,000 sq ft of siding" says what the size is. Anything looser is asked. */
+  const saysWhat = (m: Mention, meas: Measure) => {
+    if (m.kind !== 'roof' && !/siding/i.test(m.label)) return false;
+    if (m.end <= meas.index) return /^\s*(?:is|are|=|:|-)?\s*(?:about|around|roughly|approx(?:imately|\.)?|maybe|probably|~)?\s*$/i.test(text.slice(m.end, meas.index));
+    return /^\s*(?:of\s+)?(?:the\s+|our\s+|my\s+)?$/i.test(text.slice(meas.end, m.index));
+  };
+  /** An area that could be the home, the siding or the roof: the operator says which, it is never assigned to both. */
+  const askWhat = (meas: Measure, idxs: number[]) => {
+    const [s, e] = sentenceBounds(text, meas.index);
+    const near = mentions.filter((x) => x.index >= s && x.end <= e && !x.negated && x.kind !== 'stairs' && !LINEAR_KINDS.includes(x.kind)).map((x) => surfaceOf.get(x) as number);
+    const pool = near.some(isHome) ? near : services.map((_, i) => i).filter((i) => isHome(i) && !services[i].negated);
+    const options = Array.from(new Set([...idxs, ...pool])).filter((i) => !services[i].negated && !services[i].measure);
+    questions.push({
+      kind: 'size_meaning',
+      prompt: `What does ${describeMeasure(meas)} describe?`,
+      evidence: snippet(src, meas.index, meas.end),
+      serviceIdx: options.sort((a, b) => a - b),
+      payload: { label: describeMeasure(meas) },
+      measure: meas,
+    });
+  };
+  /** Attach, unless it is a loose area for a house wash or roof. */
+  const place = (idx: number, meas: Measure, by?: Mention) => {
+    if (isHome(idx) && !meas.exclusion && (meas.type === 'area' || meas.type === 'rect') && !(by && saysWhat(by, meas))) askWhat(meas, [idx]);
+    else attach(idx, meas);
+  };
+
   const NO_JOIN = /\band\b|&|\+|\bplus\b|\balso\b|\bwith\b/i;
+  // "two walkways, one 3x30 and one 4x25": the second size after a first one is another surface of the same kind.
+  // The text is normalised first, so "one" arrives as "1".
+  const NEXT_ONE = /^\s*[,;]?\s*(?:and|&|plus)?\s*(?:(?:(?:the\s+)?other|another|(?:a|the)\s+second|second|2nd)(?:\s+(?:one|1))?|one|1)?\s*(?:is|at|about|around|roughly|maybe)?\s*$/i;
+  const NEXT_WORD = /\b(?:one|1|other|another|second|2nd)\b/i;
   const ADJ_GAP = /^\s*(?:of\s+)?(?:(?:the|a|an|my|our)\s+)?(?:(?!and\b|or\b|plus\b|with\b|to\b|for\b|also\b|then\b)[a-z]+\s+)?$/i;
   const ARTICLE = /\b(?:a|an|the|our|my|that|this)\s+(?:(?:about|around|roughly|approx(?:imately)?\.?|maybe|probably)\s+)?$/i;
 
@@ -710,17 +800,33 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     }
     const [s, e] = sentenceBounds(text, meas.index);
     const areaMentions = mentions.filter((x) => x.kind !== 'stairs');
+    const runOwner = meas.ownerAt != null ? mentions.find((x) => x.index === meas.ownerAt) : undefined;
+    if (runOwner) {
+      attach(surfaceOf.get(runOwner) as number, meas);
+      continue;
+    }
     if (!meas.combinedHint) {
       const before = areaMentions.filter((x) => x.end <= meas.index && x.index >= s).pop();
       const beforeOk = !!before && meas.index - before.end <= 30 && !NO_JOIN.test(text.slice(before.end, meas.index));
       const after = areaMentions.find((x) => x.index >= meas.end && x.end <= e);
       const afterOk = !!after && after.index - meas.end <= 20 && ADJ_GAP.test(text.slice(meas.end, after.index));
       if (after && afterOk && (!beforeOk || ARTICLE.test(text.slice(s, meas.index)))) {
-        attach(surfaceOf.get(after) as number, meas);
+        place(surfaceOf.get(after) as number, meas, after);
         continue;
       }
       if (before && beforeOk) {
-        attach(surfaceOf.get(before) as number, meas);
+        place(surfaceOf.get(before) as number, meas, before);
+        continue;
+      }
+    }
+    const prev = measures.filter((x) => x.end <= meas.index && x.index >= s && !x.exclusion && x.type !== 'count').pop();
+    const owner = prev ? services.findIndex((x) => x.measure === prev) : -1;
+    if (prev && owner >= 0 && !meas.exclusion && meas.type === prev.type) {
+      const gap = text.slice(prev.end, meas.index);
+      const plural = mentions.some((x) => surfaceOf.get(x) === owner && /s$/i.test(x.label) && x.kind !== 'stairs' && x.kind !== 'gutters');
+      if (NEXT_ONE.test(gap) && (NEXT_WORD.test(gap) || plural)) {
+        const base = services[owner];
+        services.push({ ...base, name: `${base.name} 2`, evidence: snippet(src, meas.index, meas.end), measure: meas, exclusions: [], flatPrice: null, rate: null, negated: false });
         continue;
       }
     }
@@ -747,7 +853,11 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
       if (all.length === 1) idxs = all;
     }
     if (idxs.length === 1) {
-      attach(idxs[0], meas);
+      place(idxs[0], meas);
+      continue;
+    }
+    if (!meas.exclusion && meas.type !== 'length' && idxs.some(isHome)) {
+      askWhat(meas, idxs);
       continue;
     }
     if (meas.exclusion || meas.type === 'length') {
@@ -851,11 +961,12 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
       });
       return;
     }
-    const covered = questions.some((q) => (q.kind === 'combined_area' || q.kind === 'extra_measure') && q.serviceIdx.includes(i));
+    const covered = questions.some((q) => (q.kind === 'combined_area' || q.kind === 'extra_measure' || q.kind === 'size_meaning') && q.serviceIdx.includes(i));
     if (!svc.measure && !covered && !svc.flatPrice) {
       questions.push({
         kind: 'missing_qty',
-        prompt: svc.kind === 'stairs' ? `How many steps for the ${lower(i)}?` : `How big is the ${lower(i)}?`,
+        prompt:
+          svc.kind === 'stairs' ? `How many steps for the ${lower(i)}?` : LINEAR_KINDS.includes(svc.kind as RatedKind) ? `How long is the ${lower(i)}?` : `How big is the ${lower(i)}?`,
         evidence: svc.evidence,
         serviceIdx: [i],
         payload: {},
@@ -867,11 +978,6 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
 }
 
 const OTHER_SERVICES: { label: string; re: RegExp }[] = [
-  { label: 'House wash', re: /\b(?:house\s+wash(?:ing)?|wash\s+(?:the|our|my)\s+house|siding|soft\s+wash(?:ing)?)\b/i },
-  { label: 'Roof', re: /\broofs?\b/i },
-  { label: 'Deck', re: /\b(?<!pool\s)decks?\b(?!\s+(?:steps?|stairs?))/i },
-  { label: 'Fence', re: /\bfenc(?:e|es|ing)\b/i },
-  { label: 'Gutters', re: /\bgutters?\b/i },
   { label: 'Windows', re: /\bwindows?\b/i },
   { label: 'Garage floor', re: /\bgarage\s+floor\b/i },
 ];
@@ -893,7 +999,7 @@ export function guessMode(text: string): RequestMode {
   const t = text.trim();
   if (!t || t.length > 160) return 'customer';
   if (/\b(?:hi|hello|hey|thanks|thank\s+you|please|could|can\s+you|would|we|our|my|me|I|I'm|us|you|your)\b/i.test(t)) return 'customer';
-  const startsWithSurface = /^\s*(?:\d+\s+)?(?:front\s+|back\s+)?(?:drive\s?ways?|patios?|walk\s?ways?|side\s?walks?|steps|stairs|pool\s+deck)\b/i.test(t);
+  const startsWithSurface = /^\s*(?:\d+\s+)?(?:front\s+|back\s+)?(?:drive\s?ways?|patios?|walk\s?ways?|side\s?walks?|steps|stairs|pool\s+deck|house\s?wash|roofs?|decks?|fence|gutters?)\b/i.test(t);
   const priceCue = /\bflat\b|\bcents?\b|\b(?:an?|per)\s+(?:foot|ft|step|sq)|\/\s*(?:sq|ft|step)|\bat\s+\$?\d/i.test(t);
   return startsWithSurface && priceCue ? 'operator' : 'customer';
 }
@@ -1008,7 +1114,7 @@ export function draftFromRequest(parsed: ParsedRequest, settings: Settings): Dra
   // A size that does not fit how a service is priced (an area for a per-foot line) still needs a number.
   draft.lines.forEach((line, i) => {
     if (line.treatment === 'excluded' || hasSize(line)) return;
-    if (draft.questions.some((q) => q.lineIds.includes(line.id) && (q.kind === 'missing_qty' || q.kind === 'combined_area' || q.kind === 'extra_measure'))) return;
+    if (draft.questions.some((q) => q.lineIds.includes(line.id) && (q.kind === 'missing_qty' || q.kind === 'combined_area' || q.kind === 'extra_measure' || q.kind === 'size_meaning'))) return;
     const svc = parsed.services[i];
     draft.questions.push({
       id: makeId('q'),

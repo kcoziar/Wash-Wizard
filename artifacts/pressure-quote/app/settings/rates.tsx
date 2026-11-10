@@ -1,8 +1,8 @@
 import React from 'react';
 import { View } from 'react-native';
-import { Card, Field, Screen, SectionLabel, Segmented, ServiceGlyph, StatefulAmount, T, ToggleRow } from '@/components/ui';
+import { Card, Chip, Field, Screen, SectionLabel, Segmented, SERVICE_ICON, ServiceGlyph, StatefulAmount, T, ToggleRow } from '@/components/ui';
 import { parseNonNeg } from '@/lib/decimal';
-import { DEFAULT_TERMS, RATED_KINDS, SERVICE_META, unitFor } from '@/lib/defaults';
+import { DEFAULT_TERMS, RATED_KINDS, SERVICE_META, shownKinds, unitFor } from '@/lib/defaults';
 import { perUnitLabel, unitLabel } from '@/lib/format';
 import { convertQuantity, convertRate } from '@/lib/geometry';
 import { useStore } from '@/lib/store';
@@ -27,6 +27,14 @@ export default function RatesScreen() {
   const s = store.settings;
   const set = (fn: (x: Settings) => Settings) => store.updateSettings(fn);
   const setRate = (k: RatedKind, patch: Partial<ServiceRate>) => set((x) => ({ ...x, rates: { ...x.rates, [k]: { ...x.rates[k], ...patch } } }));
+  const kinds = shownKinds(s);
+  // At least one service always leads on Home.
+  const toggleShown = (k: RatedKind) =>
+    set((x) => {
+      const now = shownKinds(x).first;
+      const next = now.includes(k) ? now.filter((y) => y !== k) : [...now, k];
+      return next.length ? { ...x, services: RATED_KINDS.filter((y) => next.includes(y)) } : x;
+    });
 
   return (
     <Screen title="Rates & quote defaults" subtitle="New quotes start with these">
@@ -41,8 +49,20 @@ export default function RatesScreen() {
         onChange={(v) => set((x) => ({ ...x, units: v, rates: Object.fromEntries(RATED_KINDS.map((k) => [k, convertSaved(x.rates[k], v)])) as Settings['rates'] }))}
       />
 
+      <SectionLabel>Your services</SectionLabel>
+      <Card style={{ gap: 12 }} testID="services-shown">
+        <T v="small" muted>
+          These lead on Home and on every job. The rest are one tap away under More.
+        </T>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {RATED_KINDS.map((k) => (
+            <Chip key={k} small label={SERVICE_META[k].name} mci={SERVICE_ICON[k]} selected={kinds.first.includes(k)} onPress={() => toggleShown(k)} testID={`services-shown-${k}`} />
+          ))}
+        </View>
+      </Card>
+
       <SectionLabel>Your rates</SectionLabel>
-      {RATED_KINDS.map((k) => {
+      {[...kinds.first, ...kinds.more].map((k) => {
         const r = s.rates[k];
         return (
           <Card key={k} style={{ gap: 12 }} testID={`rate-${k}`}>

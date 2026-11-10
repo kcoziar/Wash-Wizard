@@ -4,7 +4,10 @@
  * Run: pnpm --filter @workspace/pressure-quote run test:code
  */
 import { Dec } from '../lib/decimal';
-import { defaultSettings, newDraft, newLine } from '../lib/defaults';
+import { CORE_KINDS, RATED_KINDS, defaultSettings, newDraft, newLine, shownKinds } from '../lib/defaults';
+import { EXAMPLE_MESSAGE, exampleDraft, isExampleJob } from '../lib/example';
+import { reportError, track } from '../lib/analytics';
+import { TELEMETRY_URL, connectTelemetry } from '../lib/telemetry';
 import { computeEconomics, hourlyCostCents, knownHourlyCosts, rateFromTime, suggestWorkMinutes } from '../lib/economics';
 import { rateInput, sanitizeDecimal } from '../lib/format';
 import { convertParts, sizeFromDimensions, switchLineBasis, switchLineUnit, toFlatPrice } from '../lib/lineEdit';
@@ -406,6 +409,60 @@ test('Undo snapshots are not written into saved jobs', () => {
   assert.equal(back.lines[0].unitOrigin, undefined);
   assert.equal(back.lines[0].qty, d.lines[0].qty);
   assert.equal(cents(back.lines[0]), 25200);
+});
+
+// ---------- Services shown and the example message ----------
+test('Home shows the services picked in setup first; the rest wait under More', () => {
+  assert.deepEqual(shownKinds(settings).first, CORE_KINDS);
+  assert.deepEqual(shownKinds(settings).more, RATED_KINDS.filter((k) => !CORE_KINDS.includes(k)));
+  const picked = applyAnswers(settings, answers({ services: ['roof', 'house', 'driveway'] }), new Set());
+  assert.deepEqual(shownKinds(picked).first, ['driveway', 'house', 'roof']);
+  assert.equal(shownKinds(picked).more.length, RATED_KINDS.length - 3);
+  assert.deepEqual(applyAnswers(settings, answers({ services: ['roof'] }), new Set([0])).services, CORE_KINDS, 'skipped step saves nothing');
+  assert.deepEqual(normalizeSettings({ ...JSON.parse(JSON.stringify(settings)), services: ['nope'] }).services, CORE_KINDS);
+});
+test('The example message builds a complete sample quote without touching saved rates', () => {
+  const before = JSON.stringify(settings);
+  const d = exampleDraft(settings);
+  assert.equal(JSON.stringify(settings), before);
+  assert.equal(d.lines.length, 3);
+  assert.equal(d.questions.filter((q) => !q.resolved).length, 0);
+  assert.ok(d.lines.every((l) => l.rateSource === 'sample'));
+  const calc = computeQuote(d);
+  assert.ok(calc.complete);
+  assert.equal(calc.total, 24352);
+  assert.equal(d.budget.state, 'known_value', 'the $300 is a budget');
+  assert.ok(isExampleJob({ sample: true, request: { text: EXAMPLE_MESSAGE } }));
+  assert.ok(!isExampleJob({ sample: false, request: { text: EXAMPLE_MESSAGE } }), 'a real job is never the example');
+  // Metric operators still get a priced example in the message's own feet.
+  assert.equal(computeQuote(exampleDraft({ ...settings, units: 'metric' })).total, 24352);
+});
+
+test('Telemetry sends fixed names only, never an error message or customer text', () => {
+  const sent: { url: string; body: string }[] = [];
+  const post = async (url: string, body: string) => {
+    sent.push({ url, body });
+  };
+  connectTelemetry({ appVersion: '1.0.0', platform: 'ios', enabled: true, post });
+  track('paywall_viewed', 'limit');
+  track('paste_used');
+  reportError(new TypeError('Cannot read Dana Whitfield 418 Cedar Ridge Ln'), 'pdf');
+  reportError('a string with 555-201-7788', 'share');
+  assert.deepEqual(
+    sent.map((x) => [x.url.replace(TELEMETRY_URL, ''), JSON.parse(x.body)]),
+    [
+      ['/events', { event: 'paywall_viewed', from: 'limit', appVersion: '1.0.0', platform: 'ios' }],
+      ['/events', { event: 'paste_used', appVersion: '1.0.0', platform: 'ios' }],
+      ['/crashes', { area: 'pdf', errorType: 'TypeError', appVersion: '1.0.0', platform: 'ios' }],
+      ['/crashes', { area: 'share', errorType: 'string', appVersion: '1.0.0', platform: 'ios' }],
+    ],
+  );
+  assert.ok(sent.every((x) => !/Dana|Cedar|555/.test(x.body)));
+  sent.length = 0;
+  connectTelemetry({ appVersion: '1.0.0', platform: 'ios', enabled: false, post });
+  track('paste_used');
+  reportError(new Error('x'), 'pdf');
+  assert.equal(sent.length, 0, 'development builds send nothing');
 });
 
 if (failures.length) {

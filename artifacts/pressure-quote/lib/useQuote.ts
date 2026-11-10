@@ -142,11 +142,15 @@ export function useCreateQuote() {
   return { preview, create };
 }
 
-/** Asks for an App Store rating only after repeated success, at most once every 120 days. */
+/**
+ * Asks for an App Store rating only at a moment of success (a quote marked Accepted, a finished
+ * job's recap), after at least 3 such moments, at most once every 120 days. Never on paywall
+ * screens, the last free quote, or while recovering from an error. Native prompt only.
+ */
 export function useReviewPrompt() {
   const store = useStore();
   return async () => {
-    const m = store.meta;
+    const m = store.peekMeta();
     if (m.meaningfulActions < 3) return;
     if (m.reviewRequestedAt && Date.now() - m.reviewRequestedAt < 120 * 86_400_000) return;
     try {

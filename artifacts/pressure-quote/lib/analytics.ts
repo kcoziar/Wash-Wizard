@@ -2,9 +2,9 @@
  * Anonymous funnel counts and crash reports.
  *
  * Only an event name and, for the paywall, where it was opened from are passed on. Never names,
- * addresses, phone numbers, prices or message text. No analytics or crash service is connected in
- * this build, so nothing leaves the iPhone. To connect one, call setAnalyticsSink / setCrashSink at
- * startup, then update the privacy policy and the App Privacy answers in App Store Connect.
+ * addresses, phone numbers, prices or message text. Release builds connect the app's own server at
+ * startup (see telemetry.ts); any change to what is sent must also change the privacy policy and the
+ * App Privacy answers in App Store Connect.
  */
 export type FunnelEvent =
   | 'setup_finished'

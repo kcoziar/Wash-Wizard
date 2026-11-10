@@ -10,6 +10,8 @@ export type Resolution =
   | { kind: 'combine' }
   | { kind: 'split'; first: string }
   | { kind: 'assign'; service: RatedKind }
+  /** A loose size ("2,400 sq ft"): it is this line's cleaning area. */
+  | { kind: 'use_for'; lineId: string }
   | { kind: 'measure' }
   | { kind: 'qty'; qty: string }
   | { kind: 'free' }
@@ -110,6 +112,15 @@ export function resolveQuestion(draft: Draft, questionId: string, r: Resolution,
       answer = `Used for ${target.name}`;
       break;
     }
+    case 'use_for': {
+      const line = lines.find((l) => l.id === r.lineId);
+      if (!line) return { ok: false, error: 'That service is no longer on this quote.' };
+      const v = sizeFor(q, line);
+      if (!v) return { ok: false, error: `${line.name} is not priced by area. Enter its size on the line instead.` };
+      setSize(line, v, source);
+      answer = `Used for ${line.name}`;
+      break;
+    }
     case 'replace': {
       const line = group[0];
       if (!line) return { ok: false, error: 'That service is no longer on this quote.' };
@@ -171,8 +182,9 @@ export function resolveQuestion(draft: Draft, questionId: string, r: Resolution,
       break;
     }
     case 'note': {
-      const cents = Dec.parse(q.payload.amount ?? '')?.toCents() ?? 0;
-      privateNote = `Customer mentioned ${money(cents)}: \u201C${q.evidence}\u201D`;
+      const who = q.payload.from === 'operator' ? 'Your notes mention' : 'Customer mentioned';
+      if (q.kind === 'size_meaning') privateNote = `${who} ${q.payload.label ?? 'a size'}: \u201C${q.evidence}\u201D`;
+      else privateNote = `Customer mentioned ${money(Dec.parse(q.payload.amount ?? '')?.toCents() ?? 0)}: \u201C${q.evidence}\u201D`;
       answer = 'Saved to private notes';
       break;
     }
@@ -215,6 +227,7 @@ export function reconcileQuestions(draft: Draft): Draft {
       if (l.treatment === 'excluded') answer = 'Listed as not included';
       else if (l.qtyType === 'flat' || lineQuantity(l).qty) answer = 'Size entered';
     } else if (q.kind === 'scope' && group.every((l) => l.treatment !== 'excluded')) answer = 'Priced anyway';
+    else if (q.kind === 'size_meaning' && group.every((l) => l.treatment === 'excluded' || l.qtyType === 'flat' || lineQuantity(l).qty)) answer = 'Sizes entered';
     if (!answer) return q;
     changed = true;
     return { ...q, resolved: true, answer };

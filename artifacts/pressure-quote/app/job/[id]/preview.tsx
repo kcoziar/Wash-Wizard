@@ -85,8 +85,10 @@ export default function PreviewScreen() {
   const doc: QuoteDoc | null = useMemo(() => {
     if (!job || !calc) return null;
     if (viewing) return viewing.doc;
-    return draftDoc(job, calc, store.settings);
-  }, [job, calc, viewing, store.settings]);
+    // The name and phone being typed above show on the preview straight away, before they are saved.
+    const typed = askBusiness ? { ...store.settings, business: { ...store.settings.business, name: bizName.trim() || store.settings.business.name, phone: bizPhone.trim() } } : store.settings;
+    return draftDoc(job, calc, typed);
+  }, [job, calc, viewing, store.settings, askBusiness, bizName, bizPhone]);
 
   // The customer's number is private. It is only used to address a text the operator sends.
   const smsTo = job && !job.sample ? smsAddress(job.draft.customer.phone) : null;
@@ -107,7 +109,6 @@ export default function PreviewScreen() {
       setTimeout(() => router.push({ pathname: '/paywall', params: { from: 'last-free', job: revision.id } }), 350);
       return;
     }
-    if (sent) askReview().catch(() => undefined);
   };
 
   const shareRevisionPdf = async (revision: Revision, pdfUri?: string | null): Promise<ShareResult> => {
@@ -229,7 +230,11 @@ export default function PreviewScreen() {
   const setStatus = (status: JobStatus) => {
     store.updateJob(job.id, (j) => ({ ...j, status }));
     if (viewing && status === 'sent') record(viewing.id, 'pdf', 'marked_sent');
-    if (status === 'accepted') store.noteMeaningful();
+    if (status === 'accepted' && job.status !== 'accepted' && !job.sample) {
+      store.noteMeaningful();
+      // Give the status change a moment to land before the system sheet can appear.
+      setTimeout(() => askReview().catch(() => undefined), 700);
+    }
   };
 
   const remaining = Math.max(0, FREE_QUOTES - store.freeUsed);

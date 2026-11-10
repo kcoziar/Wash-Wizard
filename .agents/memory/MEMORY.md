@@ -1,2 +1,3 @@
 - [Browser E2E testing](e2e-browser-testing.md) — headless Chromium + playwright-core in /tmp drives the Expo web preview via data-testid; skip setup first; use visible=true.
 - [Quote editing rules](quote-editing-rules.md) — frozen pricing/decimal, unit and basis switch rules, session-only undo, rate-from-time is never a market rate.
+- [Telemetry and rating prompt](telemetry-and-review-prompt.md) — first-party enum-only telemetry tied to App Privacy answers; rating prompt only on Accepted/recap.

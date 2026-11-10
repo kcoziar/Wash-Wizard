@@ -2,7 +2,7 @@
  * Storage and quote-creation guarantees, run against an in-memory store that can fail on demand.
  * Run: pnpm --filter @workspace/pressure-quote run test
  */
-import { defaultSettings, newJob, sampleDraft } from '../lib/defaults';
+import { CORE_KINDS, defaultSettings, newJob, sampleDraft, shownKinds } from '../lib/defaults';
 import { buildQuoteDoc } from '../lib/document';
 import { computeQuote } from '../lib/pricing';
 import {
@@ -377,6 +377,37 @@ async function run() {
     const res = await commitFinalization(s, 's1', (stored) => ({ revision: makeRevision(stored, 's1', 'sample'), freeUse: false }));
     assert.ok(res.ok);
     assert.equal(await ledgerCount(kv), 0);
+  });
+
+  await test('Data saved before the new services were added opens unchanged', async () => {
+    const kv = fresh();
+    // Settings exactly as the previous version wrote them: four rates, no services list.
+    const prev = JSON.parse(JSON.stringify(settings)) as Record<string, unknown> & { rates: Record<string, Record<string, string>> };
+    delete prev.services;
+    for (const k of Object.keys(prev.rates)) if (!(CORE_KINDS as string[]).includes(k)) delete prev.rates[k];
+    prev.rates.driveway.rate = '0.18';
+    prev.rates.stairs.rate = '8';
+    kv.data.set(KEYS.settings, JSON.stringify(prev));
+    const job = makeJob();
+    await saveJob(job);
+    const res = await commitFinalization(job, 'old1', freeDecide('old1'));
+    assert.ok(res.ok, 'commit failed');
+    if (!res.ok) return;
+    const savedJob = kv.data.get(jobKey(job.id));
+
+    const snap = await loadAll();
+    assert.equal(snap.issues.length, 0, `issues: ${snap.issues.join('; ')}`);
+    assert.equal(snap.settings.rates.driveway.rate, '0.18');
+    assert.equal(snap.settings.rates.stairs.rate, '8');
+    // New services arrive blank, never with an invented rate, and Home keeps the four it had.
+    for (const k of ['house', 'roof', 'deck', 'fence', 'gutters'] as const) assert.equal(snap.settings.rates[k].rate, '', `${k} rate`);
+    assert.equal(snap.settings.rates.fence.qtyType, 'linear');
+    assert.equal(JSON.stringify(shownKinds(snap.settings).first), JSON.stringify(CORE_KINDS));
+    const loaded = snap.jobs.find((j) => j.id === job.id);
+    assert.ok(loaded, 'job missing');
+    assert.equal(JSON.stringify(loaded), savedJob, 'job changed on load');
+    assert.equal(loaded?.revisions[0].doc.total, res.job.revisions[0].doc.total);
+    assert.equal(await ledgerCount(kv), 1);
   });
 
   if (failures.length) {

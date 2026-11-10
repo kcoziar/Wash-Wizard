@@ -8,6 +8,7 @@ import type {
   QuantityType,
   RatedKind,
   ServiceKind,
+  ServiceRate,
   Settings,
   TimeKey,
   Unit,
@@ -22,10 +23,24 @@ export const SERVICE_META: Record<ServiceKind, { name: string; qtyType: Quantity
   walkway: { name: 'Walkway', qtyType: 'area', eachLabel: '' },
   patio: { name: 'Patio', qtyType: 'area', eachLabel: '' },
   stairs: { name: 'Stairs', qtyType: 'each', eachLabel: 'steps' },
+  house: { name: 'House wash', qtyType: 'area', eachLabel: '' },
+  roof: { name: 'Roof', qtyType: 'area', eachLabel: '' },
+  deck: { name: 'Deck', qtyType: 'area', eachLabel: '' },
+  fence: { name: 'Fence', qtyType: 'linear', eachLabel: '' },
+  gutters: { name: 'Gutters', qtyType: 'linear', eachLabel: '' },
   custom: { name: 'Custom service', qtyType: 'flat', eachLabel: '' },
 };
 
-export const RATED_KINDS: RatedKind[] = ['driveway', 'walkway', 'patio', 'stairs'];
+export const RATED_KINDS: RatedKind[] = ['driveway', 'walkway', 'patio', 'stairs', 'house', 'roof', 'deck', 'fence', 'gutters'];
+/** Shown first when the operator has not picked their own list. Also what earlier versions showed. */
+export const CORE_KINDS: RatedKind[] = ['driveway', 'walkway', 'patio', 'stairs'];
+
+/** The operator's own list first, in the built-in order; the remaining built-ins sit behind "More". */
+export function shownKinds(settings: Pick<Settings, 'services'>): { first: RatedKind[]; more: RatedKind[] } {
+  const picked = RATED_KINDS.filter((k) => settings.services.includes(k));
+  const first = picked.length ? picked : CORE_KINDS;
+  return { first, more: RATED_KINDS.filter((k) => !first.includes(k)) };
+}
 
 export const DEFAULT_TERMS =
   'Price covers the areas and conditions listed above. If we find something different on site, we will talk with you before doing any extra work. Results on oil, rust and deep stains vary and are not guaranteed unless listed. Please clear the work areas and make an outdoor water tap available.';
@@ -48,15 +63,12 @@ export function unitFor(qtyType: QuantityType, system: UnitSystem): Unit {
 export const DEFAULT_CUSTOMER_NOTE = 'Reply YES to book.';
 
 export function defaultSettings(): Settings {
-  const rate = (kind: RatedKind) => {
-    const meta = SERVICE_META[kind];
-    return { kind, qtyType: meta.qtyType, unit: unitFor(meta.qtyType, 'imperial'), eachLabel: meta.eachLabel, rate: '', production: '', taxable: true };
-  };
+  const rates = Object.fromEntries(RATED_KINDS.map((k) => [k, defaultRate(k, 'imperial')])) as Settings['rates'];
   return {
     schema: 1,
     business: { name: '', phone: '', email: '', logo: null },
     units: 'imperial',
-    rates: { driveway: rate('driveway'), walkway: rate('walkway'), patio: rate('patio'), stairs: rate('stairs') },
+    rates,
     minimum: { state: 'unknown', amount: '' },
     minimumTaxable: true,
     trip: { state: 'unknown', amount: '', taxable: true },
@@ -82,7 +94,14 @@ export function defaultSettings(): Settings {
     },
     customerNote: DEFAULT_CUSTOMER_NOTE,
     customServices: [],
+    services: [...CORE_KINDS],
   };
+}
+
+/** A built-in service with no rate saved yet. */
+export function defaultRate(kind: RatedKind, system: UnitSystem): ServiceRate {
+  const meta = SERVICE_META[kind];
+  return { kind, qtyType: meta.qtyType, unit: unitFor(meta.qtyType, system), eachLabel: meta.eachLabel, rate: '', production: '', taxable: true };
 }
 
 export function newLine(kind: ServiceKind, settings: Settings, name?: string): Line {

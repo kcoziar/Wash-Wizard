@@ -347,7 +347,10 @@ test('Dimensions attach to the surface named before them', () => {
   assert.equal(walk?.parts[0]?.a, '4');
   assert.equal(d.lines.find((l) => l.kind === 'stairs')?.qty, '3');
   assert.ok(p.questions.some((q) => q.kind === 'condition'));
-  assert.ok(p.questions.some((q) => q.kind === 'other_service' && q.payload.label === 'Deck'));
+  // A deck is a built-in service now: its own line, waiting for a size.
+  const deck = d.lines.find((l) => l.kind === 'deck');
+  assert.ok(deck && !deck.qty && deck.parts.length === 0, 'deck line without a size');
+  assert.ok(!p.questions.some((q) => q.kind === 'other_service' && q.payload.label === 'Deck'));
   assert.ok(jobIssues(d, computeQuote(d)).some((i) => i.key === 'confirm'), 'customer sizes need confirmation');
   const confirmed = confirmQuantities(d);
   assert.ok(confirmed.lines.every((l) => l.qtySource !== 'customer'));
@@ -616,6 +619,115 @@ test('Text message for a quote uses only the customer document', () => {
   assert.equal(smsAddress('+1 555 123 4567'), '+15551234567');
   assert.equal(smsAddress('call me'), null);
   assert.equal(smsAddress('12345'), null);
+});
+
+// ---------- Built-in services beyond flatwork ----------
+const NEW_KINDS = [
+  { kind: 'house', name: 'House wash', unit: 'sqft', qty: '2400', rate: '0.15', cents: 36000 },
+  { kind: 'roof', name: 'Roof', unit: 'sqft', qty: '2000', rate: '0.35', cents: 70000 },
+  { kind: 'deck', name: 'Deck', unit: 'sqft', qty: '192', rate: '0.75', cents: 14400 },
+  { kind: 'fence', name: 'Fence', unit: 'ft', qty: '150', rate: '1.25', cents: 18750 },
+  { kind: 'gutters', name: 'Gutters', unit: 'ft', qty: '160', rate: '1.10', cents: 17600 },
+] as const;
+for (const k of NEW_KINDS) {
+  test(`${k.name}: blank by default, priced from the operator's rate, flat price allowed, on the quote`, () => {
+    assert.equal(settings.rates[k.kind].rate, '', 'no suggested rate');
+    const blank = newLine(k.kind, settings);
+    assert.equal(blank.unit, k.unit);
+    assert.equal(blank.rate, '');
+    const d = newDraft(settings);
+    d.lines = [{ ...newLine(k.kind, settings), qty: k.qty, rate: k.rate }];
+    const calc = computeQuote(d);
+    assert.equal(calc.lines[0].amount, k.cents);
+    const doc = buildQuoteDoc({ draft: d, calc, business: { name: 'Clean Co', phone: '', email: '', logo: null }, reference: 'Q-0009', issuedAt: 1_700_000_000_000, sample: false });
+    assert.ok(doc.lines.some((l) => l.name === k.name && l.amount === k.cents), 'line on the quote');
+    assert.ok(renderQuoteText(doc).includes(k.name));
+    const flat = newDraft(settings);
+    flat.lines = [{ ...newLine(k.kind, settings), qtyType: 'flat', qty: '', price: '425' }];
+    assert.equal(computeQuote(flat).lines[0].amount, 42500);
+  });
+}
+test('"House wash and roof, 2 story about 2400 sq ft" asks what the size describes', () => {
+  const p = parseRequest('Need house wash and roof cleaned, 2 story about 2400 sq ft');
+  const d = draftFromRequest(p, settings);
+  const house = d.lines.find((l) => l.kind === 'house');
+  const roof = d.lines.find((l) => l.kind === 'roof');
+  assert.ok(house && roof, 'both services');
+  assert.ok(!house!.qty && !roof!.qty && !house!.parts.length && !roof!.parts.length, 'neither is sized');
+  const q = d.questions.find((x) => x.kind === 'size_meaning');
+  assert.ok(q && q.prompt === 'What does 2,400 sq ft describe?', q?.prompt);
+  assert.ok(q!.lineIds.includes(house!.id) && q!.lineIds.includes(roof!.id));
+  assert.ok(!computeQuote(d).complete);
+  // Use it for one line only.
+  const used = resolveQuestion(d, q!.id, { kind: 'use_for', lineId: roof!.id }, settings);
+  assert.ok(used.ok);
+  if (used.ok) {
+    assert.equal(used.draft.lines.find((l) => l.kind === 'roof')?.qty, '2400');
+    assert.equal(used.draft.lines.find((l) => l.kind === 'house')?.qty, '');
+  }
+  // Or keep it as the home's size: a private note, no line sized.
+  const noted = resolveQuestion(d, q!.id, { kind: 'note' }, settings);
+  assert.ok(noted.ok && noted.privateNote?.includes('2,400 sq ft'), noted.ok ? noted.privateNote : 'failed');
+  if (noted.ok) assert.ok(noted.draft.lines.every((l) => !l.qty));
+});
+test('A size said to be the roof or the siding is used for it', () => {
+  const roof = draftFromRequest(parseRequest('Soft wash the roof please, roof is about 2000 sq ft'), settings);
+  assert.equal(roof.lines.length, 1, 'soft wash of a roof is not a house wash');
+  assert.equal(roof.lines[0].kind, 'roof');
+  assert.equal(roof.lines[0].qty, '2000');
+  const siding = draftFromRequest(parseRequest('House wash, siding is around 3000 sq ft'), settings);
+  assert.equal(siding.lines.length, 1);
+  assert.equal(siding.lines[0].qty, '3000');
+});
+test('A loose size with only a house wash is still asked, never assumed', () => {
+  const d = draftFromRequest(parseRequest('Can you wash the house? It is about 2400 sq ft.'), settings);
+  assert.equal(d.lines.length, 1);
+  assert.equal(d.lines[0].kind, 'house');
+  assert.equal(d.lines[0].qty, '');
+  assert.ok(d.questions.some((q) => q.kind === 'size_meaning'));
+});
+test('Fence and gutters read lengths, not heights', () => {
+  const d = draftFromRequest(parseRequest('Can you clean about 150 ft of 6 ft privacy fence and the gutters, around 180 feet'), settings);
+  const fence = d.lines.find((l) => l.kind === 'fence');
+  const gutters = d.lines.find((l) => l.kind === 'gutters');
+  assert.equal(fence?.qty, '150');
+  assert.equal(fence?.unit, 'ft');
+  assert.equal(gutters?.qty, '180');
+  assert.equal(d.questions.filter((q) => !q.resolved).length, 0, JSON.stringify(d.questions.map((q) => q.prompt)));
+});
+test('Deck stairs stay stairs and a pool deck stays a patio', () => {
+  const d = draftFromRequest(parseRequest('We need our deck stairs and deck cleaned, and the wood deck 12x16. Pool deck too.'), settings);
+  assert.ok(d.lines.some((l) => l.kind === 'stairs'));
+  assert.ok(d.lines.some((l) => l.kind === 'patio' && /pool deck/i.test(l.name)));
+  const deck = d.lines.filter((l) => l.kind === 'deck');
+  assert.ok(deck.length >= 1);
+  assert.ok(deck.some((l) => l.parts[0]?.a === '12' && l.parts[0]?.b === '16'));
+});
+test('"two walkways, one 3x30 and one 4x25" makes Walkway 2', () => {
+  const d = draftFromRequest(parseRequest('driveway (20x40) and two walkways, one 3x30 and one 4x25'), settings);
+  assert.equal(d.lines.length, 3);
+  assert.equal(d.lines[0].parts[0]?.a, '20');
+  const w1 = d.lines.find((l) => l.name === 'Walkway');
+  const w2 = d.lines.find((l) => l.name === 'Walkway 2');
+  assert.ok(w1 && w2, d.lines.map((l) => l.name).join(', '));
+  assert.equal(`${w1!.parts[0]?.a}x${w1!.parts[0]?.b}`, '3x30');
+  assert.equal(`${w2!.parts[0]?.a}x${w2!.parts[0]?.b}`, '4x25');
+  assert.equal(w2!.kind, 'walkway');
+  assert.equal(d.questions.filter((q) => q.kind === 'combined_area').length, 0);
+  const plain = draftFromRequest(parseRequest('Two walkways, 3x30 and 4x25'), settings);
+  assert.equal(plain.lines.filter((l) => l.kind === 'walkway').length, 2);
+  // One driveway with two sizes is still asked about, not split into two driveways.
+  const one = draftFromRequest(parseRequest('Driveway is 20x40 and 10x12'), settings);
+  assert.equal(one.lines.filter((l) => l.kind === 'driveway').length, 1);
+});
+test('Operator notes for the new services set the rate', () => {
+  assert.equal(guessMode('roof 2400 sq ft at 30 cents a foot'), 'operator');
+  const d = draftFromRequest(parseRequest('roof 2400 sq ft at 30 cents a foot', { mode: 'operator' }), settings);
+  assert.equal(d.lines[0].kind, 'roof');
+  assert.equal(d.lines[0].qty, '2400');
+  assert.equal(computeQuote(d).lines[0].amount, 72000);
+  const f = draftFromRequest(parseRequest('fence 150 linear ft at 1.25 a foot', { mode: 'operator' }), settings);
+  assert.equal(computeQuote(f).lines[0].amount, 18750);
 });
 
 test('Formatting', () => {

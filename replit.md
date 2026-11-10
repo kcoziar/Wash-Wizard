@@ -10,8 +10,10 @@ An iPhone app (Expo) for solo pressure-washing operators: price a whole visit (d
 - `pnpm --filter @workspace/pressure-quote run test` — the same plus the release gate (`tests/release.ts`), which fails if the privacy, terms or support URLs in `constants/legal.ts` are placeholders
 - `CI=1 pnpm exec expo install --check` (from the app folder) — keep native packages aligned with the Expo SDK
 - Privacy, terms and support pages: the text lives in `constants/legal.ts` (shown in the app); `pnpm --filter @workspace/pressure-quote run legal:pages` regenerates `server/pages/*.html`, served at https://wash-wizard.replit.app/privacy, /terms and /support. `test:code` fails if the pages drift from the app text. Republish after changing them, and keep the site published: the App Store listing links to these pages.
+- `pnpm --filter @workspace/pressure-quote run check:live` — after publishing, confirms the hosted privacy, terms and support pages match the app text and the telemetry endpoint is live
+- App Store Connect copy (subtitle, keywords, description, review notes, App Privacy answers): `artifacts/pressure-quote/docs/app-store-listing.md`
 - RevenueCat seed script lives in `scripts/src/seedRevenueCat.ts` (entitlement `pro`, offering `default`, packages `$rc_monthly` / `$rc_annual`)
-- The API server and mockup sandbox artifacts are scaffold leftovers; the app does not call a backend. The Expo artifact's production server (`server/serve.js`) also hosts the legal and support pages.
+- The API server receives only the app's anonymous telemetry (`POST /api/telemetry/events` and `/crashes`, table `telemetry`); the mockup sandbox is a scaffold leftover. The Expo artifact's production server (`server/serve.js`) also hosts the legal and support pages.
 
 ## Stack
 
@@ -45,13 +47,16 @@ An iPhone app (Expo) for solo pressure-washing operators: price a whole visit (d
 ## Product
 
 - First run: a 4-step setup (services, rates or flat prices, minimum and hourly target, business name), each skippable, with a live example quote. Installs from before it existed skip it.
+- Built-in services: driveway, walkway, patio, stairs, house wash, roof, deck (area) and fence, gutters (length); every one can also be a flat price, and none has a suggested rate. The services picked in setup (or Settings > Rates) lead on Home and on jobs; the rest sit under "More". Old installs keep the original four.
+- "Try it with an example message" on Home opens a complete, editable SAMPLE job with made-up rates that are never saved.
 - Quick start: tap services on Home, then sizes and rates price the quote live. A missing rate offers "Work out my rate" (from the operator's own time and hourly figure) or "I already know the price".
-- Paste a customer's message: services, sizes (including "40 ft long and 4 ft wide"), name, phone and address are picked out; unclear items become questions; customer sizes stay dashed amber until confirmed ("Looks right").
+- Paste a customer's message: services, sizes (including "40 ft long and 4 ft wide"), name, phone and address are picked out; unclear items become questions (a loose area with a house wash or roof is always asked about, never assigned); "two walkways, one 3x30 and one 4x25" makes Walkway 2; customer sizes stay dashed amber until confirmed ("Looks right").
 - Worth-it check (private): pay per hour for the whole visit against a target; one-tap visit time chips on the job.
 - After the job: a recap compares estimated and actual on the same basis (before or after costs). "Quote similar work" on recent jobs copies services and rates with sizes cleared; earlier customers are suggested as a name is typed, with "Start from their last quote".
 - Sending: "Text to {first name}" opens Messages with the PDF when the customer has a mobile number (iPhone only); Share PDF, Copy and Print otherwise.
 - Tools tab: area calculator (shapes and cut-outs, can start a quote), price check, margin and markup.
-- 3 free quotes; drafts, corrections and re-sharing are free. Pro is unlimited (monthly / yearly).
+- 3 free quotes; drafts, corrections and re-sharing are free. Pro is unlimited ($9.99/month or $59.99/year, no free trial).
+- Rating prompt (native only): when a quote is marked Accepted or a job's first recap is saved, after 3 such moments, at most every 120 days. Never after sharing, on paywalls or the last free quote.
 - Deliberately not shipped (no buttons shown): remote AI parsing, remote measurement, chemical tools, reminders.
 
 ## User preferences
@@ -67,7 +72,7 @@ An iPhone app (Expo) for solo pressure-washing operators: price a whole visit (d
 - No hardcoded hex colors outside `constants/colors.ts`.
 - Tests run with `tsx` and a local assert helper (no `@types/node` in this package), so `lib/` logic must not import React Native.
 - Number fields: a typed comma is a decimal point; a pasted "1,400" is 1400; minus signs and ambiguous text are rejected, never rewritten.
-- Analytics and crash reporting go through sinks in `lib/analytics.ts`; no vendor is connected, so nothing leaves the iPhone until the owner picks one. The app name still needs clearance before submission.
+- Analytics and crash reporting: `lib/analytics.ts` sinks, connected in release builds only by `lib/telemetry.ts` to the API server. Only fixed event names, paywall source, app area and error class name are sent; changing that means updating the privacy policy, `legal:pages` and the App Privacy answers. The app name still needs clearance before submission.
 - Test Store purchases use the in-app confirm sheet, never `Alert`.
 
 ## Pointers

@@ -7,7 +7,7 @@ export type InputState = 'known_value' | 'known_zero' | 'unknown' | 'not_applica
 /** Where a value came from. "customer" means customer-supplied and unverified. */
 export type Source = 'operator' | 'customer' | 'confirmed' | 'saved' | 'derived' | 'sample' | 'record';
 
-export type ServiceKind = 'driveway' | 'walkway' | 'patio' | 'stairs' | 'custom';
+export type ServiceKind = 'driveway' | 'walkway' | 'patio' | 'stairs' | 'house' | 'roof' | 'deck' | 'fence' | 'gutters' | 'custom';
 export type RatedKind = Exclude<ServiceKind, 'custom'>;
 export type QuantityType = 'area' | 'linear' | 'each' | 'hours' | 'flat';
 export type Unit = 'sqft' | 'sqm' | 'ft' | 'm' | 'each' | 'hour' | 'job';
@@ -111,7 +111,7 @@ export interface Budget {
   evidence: string;
 }
 
-export type QuestionKind = 'combined_area' | 'missing_qty' | 'amount_meaning' | 'other_service' | 'condition' | 'extra_measure' | 'scope';
+export type QuestionKind = 'combined_area' | 'missing_qty' | 'amount_meaning' | 'other_service' | 'condition' | 'extra_measure' | 'scope' | 'size_meaning';
 
 export interface Question {
   id: string;
@@ -258,6 +258,8 @@ export interface Settings {
   customerNote: string;
   /** The operator's own services, shown as chips after the built-in ones. */
   customServices: SavedService[];
+  /** Built-in services shown first on Home and on a job. The rest stay one tap away under "More". */
+  services: RatedKind[];
 }
 
 export interface SavedService {

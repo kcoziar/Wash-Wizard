@@ -5,10 +5,11 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { JobRow, NoticeCard, OfferCard } from '@/components/job';
-import { Banner, Button, Card, Chip, HeroCard, IconButton, Screen, SectionLabel, T, haptic } from '@/components/ui';
+import { Banner, Button, Card, Chip, HeroCard, IconButton, Screen, SectionLabel, SERVICE_ICON, T, haptic } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { track } from '@/lib/analytics';
-import { RATED_KINDS, newDraft, sampleDraft } from '@/lib/defaults';
+import { RATED_KINDS, SERVICE_META, newDraft, shownKinds } from '@/lib/defaults';
+import { exampleDraft, isExampleJob, EXAMPLE_MESSAGE } from '@/lib/example';
 import { REQUEST_LIMIT, draftFromRequest, parseRequest } from '@/lib/parser';
 import { backupDue, markBackup, quotesCreated } from '@/lib/reminders';
 import { useSubscription } from '@/lib/revenuecat';
@@ -18,23 +19,20 @@ import { FREE_QUOTES, type ServiceKind } from '@/lib/types';
 /** The iPhone's own Paste control reads the clipboard only when tapped, without the "Allow Paste" prompt. */
 const NATIVE_PASTE = Platform.OS === 'ios' && Clipboard.isPasteButtonAvailable;
 
-const PICKS: { kind: ServiceKind; label: string; icon: React.ComponentProps<typeof Chip>['mci'] }[] = [
-  { kind: 'driveway', label: 'Driveway', icon: 'road-variant' },
-  { kind: 'walkway', label: 'Walkway', icon: 'walk' },
-  { kind: 'patio', label: 'Patio', icon: 'view-grid-outline' },
-  { kind: 'stairs', label: 'Stairs', icon: 'stairs' },
-  { kind: 'custom', label: 'Other', icon: 'plus-circle-outline' },
-];
 
 export default function HomeScreen() {
   const c = useColors();
   const store = useStore();
   const sub = useSubscription();
   const [picked, setPicked] = useState<ServiceKind[]>([]);
+  const [showMore, setShowMore] = useState(false);
 
   const drafts = useMemo(() => store.jobs.filter((j) => j.status === 'draft' && !j.sample).slice(0, 3), [store.jobs]);
   const recent = useMemo(() => store.jobs.filter((j) => j.status !== 'draft' && !j.sample).slice(0, 3), [store.jobs]);
-  const sample = useMemo(() => store.jobs.find((j) => j.sample), [store.jobs]);
+  const example = useMemo(() => store.jobs.find(isExampleJob), [store.jobs]);
+  const kinds = shownKinds(store.settings);
+  // A service picked from "More" stays visible until the quote starts.
+  const pickKinds: ServiceKind[] = [...kinds.first, ...kinds.more.filter((k) => showMore || picked.includes(k)), 'custom'];
   const ratesSet = RATED_KINDS.some((k) => store.settings.rates[k].rate.trim() !== '');
   const remaining = Math.max(0, FREE_QUOTES - store.freeUsed);
   const realJobs = store.jobs.filter((j) => !j.sample).length;
@@ -110,15 +108,18 @@ export default function HomeScreen() {
     navigating.current = true;
     const job = store.createJob(newDraft(store.settings, picked));
     setPicked([]);
+    setShowMore(false);
     haptic('success');
     router.push({ pathname: '/job/[id]', params: { id: job.id } });
   };
 
-  const openSample = () => {
+  // A made-up message with sample sizes and rates: a complete quote in one tap, marked SAMPLE.
+  const openExample = () => {
     if (navigating.current) return;
     navigating.current = true;
-    const job = sample ?? store.createJob(sampleDraft(store.settings), { sample: true });
-    router.push({ pathname: '/job/[id]/preview', params: { id: job.id, from: 'home' } });
+    const job = example ?? store.createJob(exampleDraft(store.settings), { sample: true, request: EXAMPLE_MESSAGE });
+    haptic('success');
+    router.push({ pathname: '/job/[id]', params: { id: job.id } });
   };
 
   const badge = sub.isPro ? (
@@ -150,9 +151,18 @@ export default function HomeScreen() {
             ) : null}
           </View>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {PICKS.map((p) => (
-              <Chip key={p.kind} tone="hero" mci={p.icon} label={p.label} selected={picked.includes(p.kind)} onPress={() => toggle(p.kind)} testID={`pick-${p.kind}`} />
+            {pickKinds.map((k) => (
+              <Chip
+                key={k}
+                tone="hero"
+                mci={k === 'custom' ? 'plus-circle-outline' : SERVICE_ICON[k]}
+                label={k === 'custom' ? 'Other' : SERVICE_META[k].name}
+                selected={picked.includes(k)}
+                onPress={() => toggle(k)}
+                testID={`pick-${k}`}
+              />
             ))}
+            {kinds.more.length && !showMore ? <Chip tone="hero" mci="dots-horizontal" label="More" onPress={() => setShowMore(true)} testID="pick-more" /> : null}
           </View>
           <Button variant="lime" icon="arrow-right" title={picked.length ? `Start quote · ${picked.length} ${picked.length === 1 ? 'service' : 'services'}` : 'Start a quote'} onPress={start} testID="start-quote" />
           <View style={{ height: 1, backgroundColor: c.heroLine }} />
@@ -264,16 +274,16 @@ export default function HomeScreen() {
         </>
       ) : null}
 
-      {realJobs === 0 || sample ? (
-        <Card onPress={openSample} testID="open-sample">
+      {realJobs === 0 || example ? (
+        <Card onPress={openExample} testID="open-example">
           <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
             <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: c.uncertainSoft, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderStyle: 'dashed', borderColor: c.uncertainBorder }}>
-              <Feather name="file-text" size={18} color={c.uncertain} />
+              <Feather name="play" size={18} color={c.uncertain} />
             </View>
             <View style={{ flex: 1 }}>
-              <T v="bodyStrong">See a finished sample quote</T>
+              <T v="bodyStrong">Try it with an example message</T>
               <T v="small" muted>
-                Marked SAMPLE. Never uses a free quote.
+                Made-up customer, sizes and rates. Marked SAMPLE. Never uses a free quote.
               </T>
             </View>
             <Feather name="chevron-right" size={18} color={c.faint} />

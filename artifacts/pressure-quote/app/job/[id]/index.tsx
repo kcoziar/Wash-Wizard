@@ -3,9 +3,10 @@ import { Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { LineCard, QuestionCard, StatusChip } from '@/components/job';
-import { Banner, Button, Card, Chip, EmptyState, Field, HeroCard, IconButton, PassMoney, Screen, SectionLabel, Sheet, T, TextLink, haptic } from '@/components/ui';
+import { Banner, Button, Card, Chip, EmptyState, Field, HeroCard, IconButton, PassMoney, Screen, SectionLabel, SERVICE_ICON, Sheet, T, TextLink, haptic } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
-import { SERVICE_META, newLine } from '@/lib/defaults';
+import { SERVICE_META, newLine, shownKinds } from '@/lib/defaults';
+import { isExampleJob } from '@/lib/example';
 import { duration, money, percent } from '@/lib/format';
 import { recapNumbers } from '@/lib/recap';
 import { confirmQuantities, linesFromLastQuote, pastCustomers, reconcileQuestions, resolveQuestion, unconfirmed, type PastCustomer, type Resolution } from '@/lib/resolve';
@@ -13,15 +14,7 @@ import { useJob, useStore, withDraft } from '@/lib/store';
 import { latestRevision, useJobCalc } from '@/lib/useQuote';
 import type { Line, RatedKind, ServiceKind } from '@/lib/types';
 
-const ADD: ServiceKind[] = ['driveway', 'walkway', 'patio', 'stairs', 'custom'];
 const TIME_CHIPS = [45, 60, 90, 120, 180, 240];
-const ADD_ICON: Record<ServiceKind, React.ComponentProps<typeof Chip>['mci']> = {
-  driveway: 'road-variant',
-  walkway: 'walk',
-  patio: 'view-grid-outline',
-  stairs: 'stairs',
-  custom: 'plus-circle-outline',
-};
 
 export default function JobScreen() {
   const c = useColors();
@@ -34,6 +27,7 @@ export default function JobScreen() {
   const [moreContact, setMoreContact] = useState(false);
   const [picked, setPicked] = useState<PastCustomer | null>(null);
   const [showRequest, setShowRequest] = useState(false);
+  const [moreKinds, setMoreKinds] = useState(false);
 
   if (!store.ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
   if (!job || !calc) {
@@ -104,6 +98,9 @@ export default function JobScreen() {
   const showTimeChips = calc.complete && econ != null && econ.minutes == null && d.visit.mode === 'total' && d.visit.total.state === 'unknown';
   const recap = job.outcome && latest ? recapNumbers(latest.economics, job.outcome) : null;
   const soFar = calc.lines.filter((l) => l.kind !== 'minimum' && l.treatment === 'priced' && l.missing.length === 0 && !l.issue).reduce((t, l) => t + l.amount, 0);
+  const kinds = shownKinds(store.settings);
+  const addKinds: ServiceKind[] = [...kinds.first, ...(moreKinds ? kinds.more : []), 'custom'];
+  const example = isExampleJob(job);
   const ctaTitle = !latest ? 'Review & create quote' : dirty ? `Review update ${job.sample ? '' : `R${job.revisions.length + 1}`}`.trim() : `Open quote ${latest.reference}`;
 
   return (
@@ -146,41 +143,6 @@ export default function JobScreen() {
               .join(' · ')}
           </T>
         )}
-        <Pressable
-          testID="job-earnings"
-          accessibilityRole="button"
-          onPress={() => router.push({ pathname: '/job/[id]/earnings', params: { id: job.id } })}
-          style={({ pressed }) => ({ marginTop: 4, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.heroGlassSoft, borderRadius: 12, padding: 12, opacity: pressed ? 0.7 : 1 })}
-        >
-          <Feather name="eye-off" size={16} color={c.accent} />
-          <View style={{ flex: 1 }}>
-            <T v="smallStrong" color={c.heroForeground}>
-              {perHour != null && econ?.minutes
-                ? `About ${money(Math.round(perHour), { noCents: true })}/h ${econ.availablePerHour != null ? 'for your time' : 'before costs'} · ${duration(econ.minutes)}`
-                : 'Is this visit worth your time?'}
-            </T>
-            <T v="small" color={c.heroMuted}>
-              {econ?.verdict === 'meets'
-                ? `Meets your target${econ.margin != null ? ` · ${percent(econ.margin, 0)} margin after your pay` : ''}`
-                : econ?.verdict === 'below'
-                  ? 'Below your hourly target. Tap to see what price works.'
-                  : 'Private to you. Never on the quote.'}
-            </T>
-          </View>
-          <Feather name="chevron-right" size={16} color={c.heroMuted} />
-        </Pressable>
-        {showTimeChips ? (
-          <View style={{ gap: 8 }} testID="job-time-chips">
-            <T v="small" color={c.heroMuted}>
-              Door to door, about how long?
-            </T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {TIME_CHIPS.map((m) => (
-                <Chip key={m} small tone="hero" label={duration(m)} onPress={() => setVisitTotal(m)} testID={`job-time-${m}`} />
-              ))}
-            </View>
-          </View>
-        ) : null}
       </HeroCard>
 
       {recap && job.status === 'completed' ? (
@@ -200,6 +162,17 @@ export default function JobScreen() {
             <Feather name="chevron-right" size={18} color={c.faint} />
           </View>
         </Card>
+      ) : null}
+
+      {example ? (
+        <Banner
+          tone="info"
+          icon="file-text"
+          title="Example job"
+          body="Made-up customer, sizes and rates. Change anything and watch the total. Marked SAMPLE; never uses a free quote or changes your saved rates."
+          action={<Button size="sm" variant="outline" icon="arrow-right" title="Use my own job" onPress={() => router.replace('/capture')} testID="example-use-own" />}
+          testID="example-note"
+        />
       ) : null}
 
       {dirty ? (
@@ -258,16 +231,52 @@ export default function JobScreen() {
           calcLine={calc.lines.find((cl) => cl.id === line.id)}
           settings={store.settings}
           onChange={setLine}
-          onSaveRate={saveRate}
+          onSaveRate={job.sample ? undefined : saveRate}
           onOpen={() => router.push({ pathname: '/job/[id]/line', params: { id: job.id, lineId: line.id } })}
           testID={`line-${i}`}
         />
       ))}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        {ADD.map((k) => (
-          <Chip key={k} small mci={ADD_ICON[k]} label={`${k === 'custom' ? 'Other' : SERVICE_META[k].name}`} icon={undefined} onPress={() => addLine(k)} testID={`add-${k}`} />
+        {addKinds.map((k) => (
+          <Chip key={k} small mci={k === 'custom' ? 'plus-circle-outline' : SERVICE_ICON[k]} label={k === 'custom' ? 'Other' : SERVICE_META[k].name} icon={undefined} onPress={() => addLine(k)} testID={`add-${k}`} />
         ))}
+        {kinds.more.length && !moreKinds ? <Chip small mci="dots-horizontal" label="More" icon={undefined} onPress={() => setMoreKinds(true)} testID="add-more" /> : null}
       </View>
+
+      {calc.complete ? (
+        <Card onPress={() => router.push({ pathname: '/job/[id]/earnings', params: { id: job.id } })} testID="job-earnings" style={{ gap: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Feather name="eye-off" size={16} color={c.mutedForeground} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <T v="bodyStrong">
+                {perHour != null && econ?.minutes
+                  ? `About ${money(Math.round(perHour), { noCents: true })}/h ${econ.availablePerHour != null ? 'for your time' : 'before costs'} · ${duration(econ.minutes)}`
+                  : 'Is this visit worth your time?'}
+              </T>
+              <T v="small" muted>
+                {econ?.verdict === 'meets'
+                  ? `Meets your target${econ.margin != null ? ` · ${percent(econ.margin, 0)} margin after your pay` : ''}`
+                  : econ?.verdict === 'below'
+                    ? 'Below your hourly target. Tap to see what price works.'
+                    : 'Private to you. Never on the quote.'}
+              </T>
+            </View>
+            <Feather name="chevron-right" size={18} color={c.faint} />
+          </View>
+          {showTimeChips ? (
+            <View style={{ gap: 8 }} testID="job-time-chips">
+              <T v="small" muted>
+                Door to door, about how long?
+              </T>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {TIME_CHIPS.map((m) => (
+                  <Chip key={m} small label={duration(m)} onPress={() => setVisitTotal(m)} testID={`job-time-${m}`} />
+                ))}
+              </View>
+            </View>
+          ) : null}
+        </Card>
+      ) : null}
 
       <SectionLabel>Customer</SectionLabel>
       <Card style={{ gap: 12 }}>

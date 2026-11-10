@@ -30,7 +30,7 @@ export interface LegalSection {
 export const PRIVACY: LegalSection[] = [
   {
     title: 'The short version',
-    body: `${APP_NAME} keeps your jobs, customers, rates, costs and notes on your iPhone. There is no account to create, no advertising, no tracking and no analytics or crash-reporting service. ${COMPANY} does not run a server that receives or stores your quotes or your customers' details.`,
+    body: `${APP_NAME} keeps your jobs, customers, rates, costs and notes on your iPhone. There is no account to create, no advertising and no tracking. The app sends us a few anonymous counts, such as "a quote was created" or "the upgrade screen was opened", and the type of any crash, with nothing that identifies you or your customers. ${COMPANY} does not run a server that receives or stores your quotes or your customers' details.`,
   },
   {
     title: 'Who we are',
@@ -62,7 +62,7 @@ export const PRIVACY: LegalSection[] = [
   },
   {
     title: 'Analytics and crash reports',
-    body: 'The app contains no analytics, advertising or crash-reporting service. If you have chosen in iOS Settings to share analytics with app developers, Apple may give us anonymous crash reports and usage statistics under Apple\u2019s own privacy policy.',
+    body: 'To learn which steps people finish and what breaks, the app sends our own server a short anonymous record when certain things happen: setup finished or skipped, the first three quotes created, Paste or Text used, the upgrade screen opened (and from where), a purchase or restore, and, if something fails, the part of the app (such as the PDF or share step) and the type of error, such as "TypeError". Each record contains only that name, the app version and "iOS". It contains no account, device or advertising identifier, no error message, and nothing about your customers, jobs, prices or notes. Our server does not store IP addresses. These records are not linked to you, not used for advertising and not shared with anyone. The app contains no third-party analytics, advertising or crash-reporting service. If you have chosen in iOS Settings to share analytics with app developers, Apple may also give us anonymous crash reports and usage statistics under Apple\u2019s own privacy policy.',
   },
   {
     title: 'Backups you export',

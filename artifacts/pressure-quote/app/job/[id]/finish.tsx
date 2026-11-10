@@ -8,7 +8,7 @@ import { parseMoneyCents, parseNonNeg } from '@/lib/decimal';
 import { centsToInput, duration, money, shortDate } from '@/lib/format';
 import { useJob, useStore } from '@/lib/store';
 import { perHourLabel, recapNumbers, type RecapNumbers } from '@/lib/recap';
-import { latestRevision } from '@/lib/useQuote';
+import { latestRevision, useReviewPrompt } from '@/lib/useQuote';
 import type { Outcome } from '@/lib/types';
 
 function diffMinutes(a: number, b: number): string {
@@ -54,6 +54,7 @@ export default function FinishScreen() {
   const c = useColors();
   const { id } = useLocalSearchParams<{ id: string }>();
   const store = useStore();
+  const askReview = useReviewPrompt();
   const job = useJob(id);
   const latest = latestRevision(job);
   const prior = job?.outcome ?? null;
@@ -100,6 +101,8 @@ export default function FinishScreen() {
     store.noteMeaningful();
     haptic('success');
     setEditing(false);
+    // A finished job is the other success moment; editing an old recap is not.
+    if (!prior && !job.sample) setTimeout(() => askReview().catch(() => undefined), 700);
   };
 
   if (!editing && job.outcome) {

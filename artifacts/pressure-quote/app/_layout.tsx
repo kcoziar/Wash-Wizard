@@ -14,9 +14,18 @@ import { StatusBar } from 'expo-status-bar';
 import { useColors } from '@/hooks/useColors';
 import { initializeRevenueCat, SubscriptionProvider } from '@/lib/revenuecat';
 import { StoreProvider, useStore } from '@/lib/store';
+import { connectTelemetry } from '@/lib/telemetry';
+import Constants from 'expo-constants';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
+
+// Anonymous event names and scrubbed crash types only; development builds send nothing.
+connectTelemetry({
+  appVersion: Constants.expoConfig?.version ?? '',
+  platform: Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web',
+  enabled: !__DEV__,
+});
 
 try {
   initializeRevenueCat();

@@ -1,5 +1,6 @@
 import { Dec, parseMoneyCents, parseNonNeg } from './decimal';
 import { lineQuantity } from './geometry';
+import { RATED_KINDS } from './defaults';
 import type { Calc } from './pricing';
 import type { CostKey, Draft, InputState, Job, RatedKind, Settings, TimeKey } from './types';
 
@@ -23,7 +24,7 @@ export const COST_LABELS: Record<CostKey, string> = {
   overhead: 'Overhead share',
 };
 
-const RATED: RatedKind[] = ['driveway', 'walkway', 'patio', 'stairs'];
+const RATED: RatedKind[] = RATED_KINDS;
 
 function minutesOf(e: { state: InputState; minutes: string }): number | null {
   if (e.state === 'known_zero' || e.state === 'not_applicable') return 0;

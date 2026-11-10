@@ -157,7 +157,8 @@ export function LineCard({
   settings: Settings;
   onChange: (next: Line) => void;
   onOpen: () => void;
-  onSaveRate: (line: Line) => void;
+  /** Absent on sample jobs: their rates are never saved as the operator's. */
+  onSaveRate?: (line: Line) => void;
   testID?: string;
 }) {
   const c = useColors();
@@ -170,7 +171,7 @@ export function LineCard({
   // A copied or reopened job can carry a rate that is no longer the saved one: no tick then, and the operator chooses.
   const matchesSaved = !!rated && rated.rate.trim() !== '' && rated.rate === value && rated.qtyType === line.qtyType && (flat || rated.unit === line.unit);
   const ratePrompt = useMemo(() => {
-    if (!rated || (line.rateSource !== 'entered' && line.rateSource !== 'saved') || line.treatment !== 'priced') return null;
+    if (!onSaveRate || !rated || (line.rateSource !== 'entered' && line.rateSource !== 'saved') || line.treatment !== 'priced') return null;
     // A different way of pricing only becomes the usual when nothing is saved for this service yet.
     if (rated.qtyType !== line.qtyType && rated.rate.trim() !== '') return null;
     const r = parseNonNeg(value);
@@ -337,7 +338,7 @@ export function LineCard({
           </T>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Button size="sm" variant="outline" title="This job only" flex onPress={() => onChange({ ...line, rateSource: 'built' })} testID={testID ? `${testID}-rate-job` : undefined} />
-            <Button size="sm" variant="primary" title="Save for future" flex onPress={() => onSaveRate(line)} testID={testID ? `${testID}-rate-save` : undefined} />
+            <Button size="sm" variant="primary" title="Save for future" flex onPress={() => onSaveRate?.(line)} testID={testID ? `${testID}-rate-save` : undefined} />
           </View>
         </View>
       ) : null}
@@ -391,6 +392,19 @@ export function QuestionCard({
             <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
           </>
         );
+      break;
+    case 'size_meaning':
+      actions = (
+        <>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {group.map((l) => (
+              <Chip key={l.id} label={`${l.name} area`} onPress={() => run({ kind: 'use_for', lineId: l.id })} testID={`${testID}-use-${l.kind}`} />
+            ))}
+          </View>
+          <Button size="md" variant="outline" title="Home size only, save as a note" onPress={() => run({ kind: 'note' })} testID={`${testID}-note`} />
+          <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
+        </>
+      );
       break;
     case 'missing_qty':
       actions = group[0] ? (

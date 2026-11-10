@@ -7,11 +7,11 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import { Banner, Button, Card, Chip, Field, IconButton, Screen, SectionLabel, Segmented, T, haptic } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { track } from '@/lib/analytics';
+import { EXAMPLE_MESSAGE, exampleDraft } from '@/lib/example';
 import { REQUEST_LIMIT, describeMeasure, draftFromRequest, guessMode, parseRequest, type ParsedService, type RequestMode } from '@/lib/parser';
 import { useStore } from '@/lib/store';
 
-const EXAMPLE =
-  "Hi! This is Dana Whitfield at 418 Cedar Ridge Ln. Could you give me a price to pressure wash our driveway (about 24 x 36) and the front walkway, maybe 40 ft long and 4 ft wide? Also the 6 porch steps. We were hoping to stay around $300. Thanks! 555-201-7788";
+const EXAMPLE = EXAMPLE_MESSAGE;
 
 const LIMIT_TEXT = REQUEST_LIMIT.toLocaleString('en-US');
 const MODES: { value: RequestMode; label: string }[] = [
@@ -121,7 +121,8 @@ export default function CaptureScreen() {
     building.current = true;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     store.updateMeta((m) => ({ ...m, captureDraft: '' }));
-    const draft = draftFromRequest(parsed, store.settings);
+    // The untouched example comes with its own sample rates, so it prices completely without touching the operator's.
+    const draft = exampleMode && text.trim() === EXAMPLE_MESSAGE ? exampleDraft(store.settings) : draftFromRequest(parsed, store.settings);
     // Example mode is practice: the quote is marked SAMPLE, never uses a free quote and never feeds suggestions.
     const job = store.createJob(draft, { request: text.trim(), sample: exampleMode });
     haptic('success');

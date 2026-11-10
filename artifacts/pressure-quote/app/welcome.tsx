@@ -5,7 +5,7 @@ import { Button, Card, Chip, Field, HeroCard, Screen, Segmented, SERVICE_ICON, T
 import { useColors } from '@/hooks/useColors';
 import { track } from '@/lib/analytics';
 import { parseMoneyCents } from '@/lib/decimal';
-import { RATED_KINDS, SERVICE_META, newDraft, newLine, unitFor } from '@/lib/defaults';
+import { CORE_KINDS, RATED_KINDS, SERVICE_META, newDraft, newLine, unitFor } from '@/lib/defaults';
 import { money, moneyRate, perUnitLabel, unitLabel } from '@/lib/format';
 import { computeQuote } from '@/lib/pricing';
 import { applyAnswers, type RateAnswer, type SetupAnswers } from '@/lib/onboarding';
@@ -15,17 +15,23 @@ import type { RatedKind, Unit } from '@/lib/types';
 const STEPS = ['What do you clean?', 'Your rates', 'Minimum and hourly target', 'Name on your quotes'];
 
 /** Sizes for the live example only. Always labelled as examples and never saved. */
-const EXAMPLE_AREA: Record<RatedKind, { sqft: string; sqm: string }> = {
+const EXAMPLE_AREA: Partial<Record<RatedKind, { sqft: string; sqm: string }>> = {
   driveway: { sqft: '600', sqm: '56' },
   walkway: { sqft: '120', sqm: '11' },
   patio: { sqft: '300', sqm: '28' },
   stairs: { sqft: '60', sqm: '6' },
+  house: { sqft: '2400', sqm: '220' },
+  roof: { sqft: '2000', sqm: '185' },
+  deck: { sqft: '300', sqm: '28' },
+};
+const EXAMPLE_LENGTH: Partial<Record<RatedKind, { ft: string; m: string }>> = {
+  fence: { ft: '150', m: '45' },
+  gutters: { ft: '160', m: '50' },
 };
 
 function exampleQty(kind: RatedKind, unit: Unit): string {
-  if (unit === 'sqft' || unit === 'sqm') return EXAMPLE_AREA[kind][unit];
-  if (unit === 'ft') return '40';
-  if (unit === 'm') return '12';
+  if (unit === 'sqft' || unit === 'sqm') return EXAMPLE_AREA[kind]?.[unit] ?? (unit === 'sqft' ? '300' : '28');
+  if (unit === 'ft' || unit === 'm') return EXAMPLE_LENGTH[kind]?.[unit] ?? (unit === 'ft' ? '40' : '12');
   if (unit === 'each') return '6';
   return '2';
 }
@@ -45,9 +51,9 @@ export default function Welcome() {
   const [name, setName] = useState(s.business.name);
   const [phone, setPhone] = useState(s.business.phone);
 
-  const answers: SetupAnswers = { rates, minimum, target, name, phone };
+  const answers: SetupAnswers = { services: kinds, rates, minimum, target, name, phone };
   // Services picked on the first step; everything when that step was skipped.
-  const shown = kinds.length && !skipped.has(0) ? kinds : step === 0 ? [] : RATED_KINDS;
+  const shown = kinds.length && !skipped.has(0) ? kinds : step === 0 ? [] : CORE_KINDS;
 
   const example = useMemo(() => {
     const settings = applyAnswers(s, answers, skipped);

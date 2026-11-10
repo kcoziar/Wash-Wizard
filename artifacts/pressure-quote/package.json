@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx tests/fixtures.ts && tsx tests/storage.ts && tsx tests/features.ts && tsx tests/legalPages.mjs && tsx tests/release.ts",
     "test:code": "tsx tests/fixtures.ts && tsx tests/storage.ts && tsx tests/features.ts && tsx tests/legalPages.mjs",
-    "legal:pages": "tsx scripts/writeLegalPages.mjs"
+    "legal:pages": "tsx scripts/writeLegalPages.mjs",
+    "check:live": "tsx scripts/checkLivePages.mjs"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

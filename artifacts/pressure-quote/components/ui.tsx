@@ -895,6 +895,11 @@ export const SERVICE_ICON: Record<ServiceKind, React.ComponentProps<typeof Mater
   walkway: 'walk',
   patio: 'view-grid-outline',
   stairs: 'stairs',
+  house: 'home-outline',
+  roof: 'home-roof',
+  deck: 'view-sequential',
+  fence: 'fence',
+  gutters: 'pipe',
   custom: 'spray',
 };
 
