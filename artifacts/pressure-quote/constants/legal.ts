@@ -128,6 +128,10 @@ export const TERMS: LegalSection[] = [
     body: `To the extent the law allows, ${COMPANY} is not liable for lost profits, lost data, underpriced or overpriced work, or indirect or consequential losses arising from use of the app. Our total liability for any claim is limited to the amount you paid for the app in the 12 months before the claim. Nothing here limits rights you have under consumer law that cannot be waived.`,
   },
   {
+    title: 'Governing law',
+    body: 'These terms are governed by the laws of the State of Utah, without regard to its conflict-of-law rules. Any dispute will be handled in the state or federal courts located in Utah, unless consumer law gives you the right to bring a claim where you live.',
+  },
+  {
     title: 'Changes to these terms',
     body: 'We may update these terms. The new version will appear in the app and on this page with a new date. Continuing to use the app after an update means you accept the new terms.',
   },

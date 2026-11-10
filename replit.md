@@ -1,6 +1,6 @@
 # Pressure Washing Calculator+
 
-An iPhone app (Expo) for solo pressure-washing operators: price a whole visit (driveways, walkways, patios, stairs, other flatwork) from a few taps or a pasted customer message, check whether it is worth the time, and send a clean quote. Name is provisional.
+An iPhone app (Expo), shown as "Wash Quote+" on the home screen, for solo pressure-washing operators: price a whole visit (driveways, walkways, patios, stairs, other flatwork) from a few taps or a pasted customer message, check whether it is worth the time, and send a clean quote.
 
 ## Run & Operate
 

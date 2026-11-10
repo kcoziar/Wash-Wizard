@@ -7,6 +7,7 @@ Copy for App Store Connect. Every claim here matches what the app does in this b
 | Field | Value |
 | --- | --- |
 | Name (30 max) | Pressure Washing Calculator+ |
+| Home-screen name (under the icon) | Wash Quote+ (set in app.json; the App Store name above stays the full name) |
 | Subtitle (30 max) | Quotes from customer texts |
 | Bundle ID | com.kozipublishing.pressurequote |
 | Primary category | Business |
