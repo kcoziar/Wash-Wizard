@@ -7,11 +7,11 @@ import { partsTotal, sqftToSqm } from '../lib/geometry';
 import { allocate, computeQuote } from '../lib/pricing';
 import { computeEconomics, marginOf, priceForMargin, priceForMarkup, supportedMinutes } from '../lib/economics';
 import { defaultSettings, newDraft, newLine, sampleDraft } from '../lib/defaults';
-import { draftFromRequest, parseRequest } from '../lib/parser';
-import { confirmQuantities, jobIssues, resolveQuestion } from '../lib/resolve';
-import { buildQuoteDoc, quoteFileName, quoteTitle, renderQuoteHtml, renderQuoteText } from '../lib/document';
-import { decideAccess } from '../lib/access';
-import { money, quoteReference } from '../lib/format';
+import { draftFromRequest, guessMode, parseRequest } from '../lib/parser';
+import { confirmQuantities, jobIssues, reconcileQuestions, resolveQuestion } from '../lib/resolve';
+import { buildQuoteDoc, quoteFileName, quoteSmsMessage, quoteTitle, renderQuoteHtml, renderQuoteText } from '../lib/document';
+import { decideAccess, isNewVisit } from '../lib/access';
+import { money, quoteReference, smsAddress } from '../lib/format';
 import type { Draft, Line, Part } from '../lib/types';
 
 /** Minimal strict assertions so the tests typecheck without Node type definitions. */
@@ -384,6 +384,161 @@ test('Malicious markup in a request is escaped in output', () => {
   assert.ok(html.includes('A&amp;B &lt;Wash&gt;'));
 });
 
+// What switching to metric in Settings does to blank saved rates: the units change with it.
+const metricSettings: typeof settings = {
+  ...settings,
+  units: 'metric',
+  rates: Object.fromEntries(
+    Object.entries(settings.rates).map(([k, r]) => [k, { ...r, unit: r.unit === 'sqft' ? 'sqm' : r.unit === 'ft' ? 'm' : r.unit }]),
+  ) as typeof settings.rates,
+};
+const qtys = (d: Draft) => d.lines.map((l) => `${l.name}=${l.qty || l.parts.map((p) => `${p.subtract ? '-' : ''}${p.shape === 'rect' ? `${p.a}x${p.b}` : p.a}`).join('')}`);
+
+test('Metric sizes are kept exact in a metric account and converted (with the original shown) otherwise', () => {
+  const text = 'The patio is 5 x 4 m and the driveway is 50 m2';
+  const metric = draftFromRequest(parseRequest(text, { units: 'metric' }), metricSettings);
+  assert.deepEqual(qtys(metric), ['Patio=5x4', 'Driveway=50']);
+  assert.ok(metric.lines.every((l) => l.unit === 'sqm'));
+  const imperial = draftFromRequest(parseRequest(text), settings);
+  const patio = imperial.lines[0];
+  assert.equal(patio.parts[0].a, '215.28');
+  assert.equal(patio.parts[0].label, '5 \u00D7 4 m');
+  assert.equal(imperial.lines[1].parts[0].a, '538.2');
+});
+test('Mixed units in one size are converted side by side', () => {
+  const d = draftFromRequest(parseRequest('Driveway 10 ft x 5 m'), settings);
+  assert.equal(d.lines[0].parts[0].a, '164.04');
+  assert.equal(d.lines[0].parts[0].label, '10 ft \u00D7 5 m');
+});
+test('An exclusion is subtracted visibly, and a "do not wash" surface is listed as not included', () => {
+  const p = parseRequest('Driveway is 600 sq ft excluding 100 sq ft for the planter. Do not wash the patio.');
+  const d = draftFromRequest(p, settings);
+  const drive = d.lines[0];
+  assert.deepEqual(drive.parts.map((x) => [x.a, x.subtract]), [['600', false], ['100', true]]);
+  assert.equal(drive.parts[1].label, 'Left out: 100 sq ft');
+  assert.equal(d.lines[1].treatment, 'excluded');
+  const scope = d.questions.find((q) => q.kind === 'scope');
+  assert.ok(scope, 'scope question');
+  assert.ok(!d.questions.some((q) => q.kind === 'missing_qty'), 'an excluded surface never asks for a size');
+  const priced = resolveQuestion(d, scope!.id, { kind: 'include' }, settings);
+  assert.ok(priced.ok && priced.draft.lines[1].treatment === 'priced');
+  const removed = resolveQuestion(d, scope!.id, { kind: 'remove' }, settings);
+  assert.ok(removed.ok && removed.draft.lines.length === 1);
+  const kept = resolveQuestion(d, scope!.id, { kind: 'keep_excluded' }, settings);
+  assert.ok(kept.ok && kept.draft.lines[1].treatment === 'excluded');
+  const sub = draftFromRequest(parseRequest('Driveway 20x40 but leave out the 4x4 pad by the garage'), settings);
+  assert.deepEqual(qtys(sub), ['Driveway=20x40-16']);
+});
+test('Negated lists: "not the driveway or the steps"', () => {
+  const p = parseRequest('The patio and walkway, not the driveway or the steps please');
+  assert.deepEqual(p.services.map((s) => [s.kind, s.negated]), [['patio', false], ['walkway', false], ['driveway', true], ['stairs', true]]);
+});
+test('Two patios and front and back steps stay separate lines', () => {
+  const patios = draftFromRequest(parseRequest('Front patio 200 sq ft. Back patio 300 sq ft.'), settings);
+  assert.deepEqual(qtys(patios), ['Front patio=200', 'Back patio=300']);
+  const steps = draftFromRequest(parseRequest('Can you do the front and back steps? 6 front steps and 4 back steps.'), settings);
+  assert.deepEqual(qtys(steps), ['Front steps=6', 'Back steps=4']);
+  const walks = draftFromRequest(parseRequest('Front walkway 4x30 and the city sidewalk 5x60. Thanks, Mike'), settings);
+  assert.deepEqual(qtys(walks), ['Front walkway=4x30', 'City sidewalk=5x60']);
+});
+test('A size before the surface attaches to it; the next one asks', () => {
+  const both = draftFromRequest(parseRequest('I have a 600 sq ft driveway and a 200 sq ft patio'), settings);
+  assert.deepEqual(qtys(both), ['Driveway=600', 'Patio=200']);
+  assert.equal(both.questions.length, 0);
+  const d = draftFromRequest(parseRequest('We need a quote on a 600 sq ft driveway and the patio.'), settings);
+  assert.deepEqual(qtys(d), ['Driveway=600', 'Patio=']);
+  const q = d.questions.find((x) => x.kind === 'missing_qty');
+  assert.equal(q?.lineIds[0], d.lines[1].id);
+});
+test('"Next steps" is not a stairs service', () => {
+  const p = parseRequest('What are the next steps? The driveway is 20 by 40.');
+  assert.deepEqual(p.services.map((s) => s.kind), ['driveway']);
+});
+test('Addresses and names are read without swallowing nearby words', () => {
+  const cases: [string, string, string][] = [
+    ['Hi! This is Dana Whitfield at 418 Cedar Ridge Ln. Driveway 24 x 36.', 'Dana Whitfield', '418 Cedar Ridge Ln'],
+    ['I live at 1234 N Main St, Denver, CO 80202. Driveway 20x20.', '', '1234 N Main St, Denver, CO 80202'],
+    ['Please quote 123 Fox Run Rd. Driveway 30x30', '', '123 Fox Run Rd'],
+    ['Driveway 20x40 at 512 Maple Ave, Thanks!', '', '512 Maple Ave'],
+    ['Driveway at 512 maple ave is 20x40', '', '512 maple ave'],
+    ['Driveway around 1200 sq ft. Call me at 555 201 3344. Thanks! Jenny', 'Jenny', ''],
+    ['Need my driveway done - Sarah 555-123-4567', 'Sarah', ''],
+    ['Hey there, it\'s Rob. We have a concrete driveway.', 'Rob', ''],
+    ['Driveway is 24 by 50 feet', '', ''],
+    ["We're at 123 Oak St, Lehi, UT 84043", '', '123 Oak St, Lehi, UT 84043'],
+    ['1420 N Maple Ave, Provo UT 84604', '', '1420 N Maple Ave, Provo UT 84604'],
+    ['55 W Center St. Apt 4, Orem', '', '55 W Center St. Apt 4, Orem'],
+    ['we usually have 3 cars in the drive', '', ''],
+    ["I'm free after 5 at 12 Elm Street", '', '12 Elm Street'],
+    ['Budget is around $400 - Sarah 555-123-4567', 'Sarah', ''],
+    ['Thanks, Mike', 'Mike', ''],
+  ];
+  for (const [text, name, address] of cases) {
+    const p = parseRequest(text);
+    assert.equal(p.customer.name, name, `name in: ${text}`);
+    assert.equal(p.customer.address, address, `address in: ${text}`);
+  }
+});
+test('A per-unit amount is a question, never a budget or a price', () => {
+  const p = parseRequest('Another company charged $0.15/sq ft for the driveway, 20x40.');
+  assert.equal(p.budget, null);
+  const q = p.questions.find((x) => x.kind === 'amount_meaning');
+  assert.equal(q?.payload.label, 'per sq ft');
+  const d = draftFromRequest(p, settings);
+  assert.ok(d.lines.every((l) => l.price === '' && l.rateSource !== 'entered'));
+});
+test('Operator notes: "250 flat" is a price and "15 cents a foot" is a rate; customer mode never prices', () => {
+  const flat = draftFromRequest(parseRequest('driveway twenty by forty, two fifty flat', { mode: 'operator' }), settings);
+  assert.equal(flat.lines[0].qtyType, 'flat');
+  assert.equal(flat.lines[0].price, '250');
+  assert.equal(flat.lines[0].detail, '20 \u00D7 40 ft');
+  const rates = draftFromRequest(parseRequest('patio 300 sq ft at 15 cents a foot. steps 6 at $5 a step', { mode: 'operator' }), settings);
+  assert.deepEqual(rates.lines.map((l) => [l.qty, l.rate, l.rateSource, l.qtySource]), [['300', '0.15', 'entered', 'operator'], ['6', '5', 'entered', 'operator']]);
+  assert.equal(rates.questions.length, 0);
+  const customer = draftFromRequest(parseRequest('driveway 20 by 40, 250 flat'), settings);
+  assert.ok(customer.lines.every((l) => l.price === '' && l.qtyType !== 'flat'));
+  assert.equal(guessMode('driveway 20 by 40, 250 flat'), 'operator');
+  assert.equal(guessMode('Hi, can you do my driveway for 250 flat?'), 'customer');
+  assert.equal(guessMode('Driveway 20x40, $300?'), 'customer');
+});
+test('Number words are read as numbers, with the customer\'s own words kept as evidence', () => {
+  const p = parseRequest('My budget is two hundred dollars for the driveway which is twelve hundred square feet');
+  assert.equal(p.budget?.amount, '200');
+  assert.equal(p.services[0].measure?.value, '1200');
+  assert.ok(p.budget?.evidence.includes('two hundred dollars'));
+});
+test('A second size for one surface asks, and can replace or add a line', () => {
+  const d = draftFromRequest(parseRequest('Driveway 24x50, also the driveway is about 1200 sq ft'), settings);
+  const q = d.questions.find((x) => x.kind === 'extra_measure');
+  assert.ok(q, 'extra measure question');
+  assert.equal(q?.payload.area, '1200');
+  const replaced = resolveQuestion(d, q!.id, { kind: 'replace' }, settings);
+  assert.ok(replaced.ok && replaced.draft.lines[0].qty === '1200' && replaced.draft.lines[0].parts.length === 0);
+  const second = resolveQuestion(d, q!.id, { kind: 'second' }, settings);
+  assert.ok(second.ok && second.draft.lines.length === 2 && second.draft.lines[1].name === 'Driveway 2' && second.draft.lines[1].qty === '1200');
+});
+test('Combined area in sq ft is converted for a metric line', () => {
+  const p = parseRequest("Can you quote our driveway and front path? It's about 1,400 square feet total.");
+  const d = draftFromRequest(p, metricSettings);
+  const q = d.questions.find((x) => x.kind === 'combined_area')!;
+  assert.equal(q.payload.unit, 'sqm');
+  assert.equal(q.payload.area, '130.06');
+  const r = resolveQuestion(d, q.id, { kind: 'combine' }, metricSettings);
+  assert.ok(r.ok && r.draft.lines[0].qty === '130.06');
+});
+test('Answered-by-editing questions close on their own; a length with no surface still asks', () => {
+  const d = draftFromRequest(parseRequest('We need the patio and the walkway done.'), settings);
+  assert.equal(d.questions.filter((q) => !q.resolved).length, 2);
+  const sized = { ...d, lines: d.lines.map((l, i) => (i === 0 ? { ...l, qty: '200' } : l)) };
+  const r1 = reconcileQuestions(sized);
+  assert.equal(r1.questions.filter((q) => !q.resolved).length, 1);
+  const removed = { ...r1, lines: r1.lines.slice(0, 1) };
+  assert.equal(reconcileQuestions(removed).questions.filter((q) => !q.resolved).length, 0);
+  assert.equal(reconcileQuestions(removed).questions[1].answer, 'Removed from the quote');
+  const loose = parseRequest('About 100 linear feet of edging near the driveway and the patio');
+  assert.ok(loose.questions.some((q) => q.kind === 'missing_qty' && q.serviceIdx.length === 0 && q.payload.label === '100 ft long'));
+});
+
 // ---------- Customer output privacy ----------
 test('Customer output excludes every private sentinel in every format', () => {
   const d = sampleDraft(settings);
@@ -394,8 +549,8 @@ test('Customer output excludes every private sentinel in every format', () => {
   d.customer.phone = '555-000-9999';
   d.customer.email = 'secret-customer@example.com';
   const c = computeQuote(d);
-  const doc = buildQuoteDoc({ draft: d, calc: c, business: { name: 'Clean Co', phone: '555-111-2222', email: 'hi@clean.co', logo: null }, reference: 'Q-0042', issuedAt: Date.now(), sample: true });
-  const outputs = [renderQuoteHtml(doc), renderQuoteText(doc), quoteFileName(doc), quoteTitle(doc), JSON.stringify(doc)];
+  const doc = buildQuoteDoc({ draft: d, calc: c, business: { name: 'Clean Co', phone: '555-111-2222', email: 'hi@clean.co', logo: null }, reference: 'Q-0042', issuedAt: 1_700_000_000_000, sample: true });
+  const outputs = [renderQuoteHtml(doc), renderQuoteText(doc), quoteFileName(doc), quoteTitle(doc), quoteSmsMessage(doc), JSON.stringify(doc)];
   for (const sentinel of ['913.57', '87.65', '4,321', '4321', 'SENTINEL', '777', '555-000-9999', 'secret-customer', 'Sample customer note']) {
     for (const o of outputs) assert.ok(!o.includes(sentinel), `leaked ${sentinel}`);
   }
@@ -430,6 +585,37 @@ test('Access policy follows the ownership matrix', () => {
   assert.deepEqual(decideAccess({ hasRevision: false, sample: false, status: 'pending', freeUsed: 3 }), { kind: 'blocked', reason: 'pending' });
   assert.deepEqual(decideAccess({ hasRevision: false, sample: false, status: 'checking', freeUsed: 3 }), { kind: 'blocked', reason: 'checking' });
   assert.deepEqual(decideAccess({ hasRevision: false, sample: false, status: 'expired', freeUsed: 3 }), { kind: 'blocked', reason: 'exhausted' });
+  // Offline with no free quotes left is never presented as "buy again".
+  assert.deepEqual(decideAccess({ hasRevision: false, sample: false, status: 'unreachable', freeUsed: 3 }), { kind: 'blocked', reason: 'unreachable' });
+  assert.deepEqual(decideAccess({ hasRevision: false, sample: false, status: 'unreachable', freeUsed: 1 }), { kind: 'free', remaining: 2 });
+  // A still-valid cached verification and a billing grace period are Pro.
+  assert.equal(decideAccess({ hasRevision: false, sample: false, status: 'cached', freeUsed: 3 }).kind, 'pro');
+  assert.equal(decideAccess({ hasRevision: false, sample: false, status: 'grace', freeUsed: 3 }).kind, 'pro');
+  // A "revision" for a different customer at a different address is a new visit, unless Pro.
+  assert.equal(decideAccess({ hasRevision: true, newVisit: true, sample: false, status: 'none', freeUsed: 0 }).kind, 'new_visit');
+  assert.equal(decideAccess({ hasRevision: true, newVisit: true, sample: false, status: 'active', freeUsed: 3 }).kind, 'revision');
+  assert.equal(decideAccess({ hasRevision: true, newVisit: false, sample: false, status: 'none', freeUsed: 3 }).kind, 'revision');
+});
+test('A new visit needs both a different customer and a different address', () => {
+  const was = { name: 'Sarah Jones', address: '12 Oak St' };
+  assert.equal(isNewVisit(was, { name: 'Sarah Jones', address: '12 Oak Street, Unit 2' }), false);
+  assert.equal(isNewVisit(was, { name: 'Sara Jones', address: '12 Oak St' }), false);
+  assert.equal(isNewVisit(was, { name: 'Mike Patel', address: '90 Pine Ave' }), true);
+  assert.equal(isNewVisit(was, { name: '', address: '90 Pine Ave' }), false);
+  assert.equal(isNewVisit(null, { name: 'Mike Patel', address: '90 Pine Ave' }), false);
+});
+test('Text message for a quote uses only the customer document', () => {
+  const d = sampleDraft(settings);
+  d.customer.name = 'Sarah Jones';
+  const doc = buildQuoteDoc({ draft: d, calc: computeQuote(d), business: { name: 'Clean Co', phone: '', email: '', logo: null }, reference: 'Q-0007', issuedAt: 1_700_000_000_000, sample: false });
+  const msg = quoteSmsMessage(doc);
+  assert.ok(msg.startsWith('Hi Sarah, here'), msg);
+  assert.ok(msg.includes(money(doc.total)), msg);
+  assert.ok(msg.endsWith('Reply YES to book. - Clean Co'), msg);
+  assert.equal(smsAddress(' (555) 123-4567 '), '5551234567');
+  assert.equal(smsAddress('+1 555 123 4567'), '+15551234567');
+  assert.equal(smsAddress('call me'), null);
+  assert.equal(smsAddress('12345'), null);
 });
 
 test('Formatting', () => {

@@ -32,6 +32,12 @@ export function moneyRate(text: string): string {
   return `${d.sign() < 0 ? '\u2212' : ''}$${group(ip)}.${frac}`;
 }
 
+/** A rate as field text, with at least two decimals as an operator would type it: 0.20, 6.5477. */
+export function rateInput(d: Dec): string {
+  const [ip, fp = ''] = d.toString().split('.');
+  return `${ip}.${fp.padEnd(2, '0')}`;
+}
+
 export function centsToInput(cents: number): string {
   const abs = Math.abs(cents);
   const s = `${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
@@ -136,16 +142,43 @@ export function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** Keeps only digits and a single decimal point while typing. */
-export function sanitizeDecimal(text: string, maxDecimals = 4): string {
-  let t = text.replace(/[^0-9.]/g, '');
+/**
+ * Cleans a typed or pasted number without ever changing what it means. Returns null to reject the
+ * change (the field keeps its previous value) instead of guessing.
+ * - "$1,400" and "1,400.50" lose the dollar sign and thousands commas.
+ * - A lone comma is a decimal point, as typed on a comma-decimal keyboard: "0,20" is 0.20, never 20.
+ * - "1.400,50" (dot thousands, comma decimal) is 1400.50.
+ * - Minus signs, letters, a second decimal point, too many decimals or too many digits are rejected.
+ */
+export function sanitizeDecimal(text: string, maxDecimals = 4): string | null {
+  let t = text.replace(/[\s$\u00A0]/g, '');
+  if (t === '') return '';
+  if (/[^0-9.,]/.test(t)) return null;
+  if (t.includes(',')) {
+    if (/^\d{1,3}(,\d{3})+(\.\d*)?$/.test(t) && !t.startsWith('0,')) t = t.replace(/,/g, '');
+    else if (/^\d{1,3}(\.\d{3})+,\d*$/.test(t)) t = t.replace(/\./g, '').replace(',', '.');
+    else if ((t.match(/,/g) ?? []).length === 1 && !t.includes('.')) t = t.replace(',', '.');
+    else return null;
+  }
+  if ((t.match(/\./g) ?? []).length > 1) return null;
   const i = t.indexOf('.');
-  if (i >= 0) t = t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, '').slice(0, maxDecimals);
+  if (i >= 0 && t.length - i - 1 > maxDecimals) return null;
+  if (maxDecimals === 0 && i >= 0) return null;
   if (t.length > 1 && t.startsWith('0') && t[1] !== '.') t = t.replace(/^0+/, '') || '0';
-  return t.slice(0, 12);
+  if (t.startsWith('.')) t = `0${t}`;
+  if (t.length > 12) return null;
+  return t;
 }
 
 export function quoteReference(jobNumber: number, revisionNumber: number): string {
   const base = `Q-${String(jobNumber).padStart(4, '0')}`;
   return revisionNumber > 1 ? `${base}-R${revisionNumber}` : base;
+}
+
+/** A phone number Messages can address, or null. Keeps a leading + and the digits only. */
+export function smsAddress(raw: string): string | null {
+  const t = raw.trim();
+  const digits = t.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return null;
+  return `${t.startsWith('+') ? '+' : ''}${digits}`;
 }

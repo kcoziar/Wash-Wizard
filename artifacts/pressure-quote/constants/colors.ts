@@ -51,6 +51,13 @@ const light = {
   heroLine: '#2A2D31',
   heroWarn: '#F2B84B',
   heroDanger: '#FF8A80',
+  /** Translucent fills used only on the dark hero surface. */
+  heroGlass: 'rgba(255,255,255,0.08)',
+  heroGlassSoft: 'rgba(255,255,255,0.06)',
+  heroGlassStrong: 'rgba(255,255,255,0.12)',
+  heroGlassBorder: 'rgba(255,255,255,0.14)',
+  heroAccentSoft: 'rgba(200,242,60,0.14)',
+  heroDangerSoft: 'rgba(255,107,94,0.16)',
 };
 
 const dark: typeof light = {
@@ -99,6 +106,13 @@ const dark: typeof light = {
   heroLine: '#2A2D31',
   heroWarn: '#F2B84B',
   heroDanger: '#FF8A80',
+  /** Translucent fills used only on the dark hero surface. */
+  heroGlass: 'rgba(255,255,255,0.08)',
+  heroGlassSoft: 'rgba(255,255,255,0.06)',
+  heroGlassStrong: 'rgba(255,255,255,0.12)',
+  heroGlassBorder: 'rgba(255,255,255,0.14)',
+  heroAccentSoft: 'rgba(200,242,60,0.14)',
+  heroDangerSoft: 'rgba(255,107,94,0.16)',
 };
 
 const colors = {

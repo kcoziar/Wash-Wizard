@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
 import { View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { PartsEditor } from '@/components/job';
+import { PartsEditor, RateBuilder } from '@/components/job';
 import { Banner, Button, Card, EmptyState, Field, Screen, SectionLabel, Segmented, Sheet, T, ToggleRow } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { parseNonNeg } from '@/lib/decimal';
-import { unitFor } from '@/lib/defaults';
-import { convertQuantity, convertRate } from '@/lib/geometry';
+import { knownHourlyCosts } from '@/lib/economics';
 import { makeId, money, moneyRate, number, perUnitLabel, unitLabel } from '@/lib/format';
+import { lineQuantity } from '@/lib/geometry';
+import { sizeFromDimensions, switchLineBasis, switchLineUnit } from '@/lib/lineEdit';
 import { lineAmount } from '@/lib/pricing';
 import { useJob, useStore } from '@/lib/store';
-import type { Line, Part, QuantityType, Unit } from '@/lib/types';
+import type { Line, QuantityType, RatedKind, Unit } from '@/lib/types';
 
 const QTY_TYPES: { value: QuantityType; label: string }[] = [
   { value: 'area', label: 'Area' },
@@ -19,31 +20,6 @@ const QTY_TYPES: { value: QuantityType; label: string }[] = [
   { value: 'hours', label: 'Hours' },
   { value: 'flat', label: 'Flat' },
 ];
-
-function conv(text: string, from: Unit, to: Unit, dp: number): string {
-  const d = parseNonNeg(text);
-  if (!d) return text;
-  return convertQuantity(d, from, to).round(dp).toString();
-}
-
-/** Switches area/length units on a line while keeping the same amount as closely as the new units allow. */
-function switchUnit(line: Line, to: Unit): Line {
-  const from = line.unit;
-  if (from === to) return line;
-  const lenFrom: Unit = from === 'sqm' ? 'm' : 'ft';
-  const lenTo: Unit = to === 'sqm' ? 'm' : 'ft';
-  const rate = parseNonNeg(line.rate);
-  const parts: Part[] = line.parts.map((p) =>
-    p.shape === 'value' ? { ...p, a: conv(p.a, from, to, 2) } : { ...p, a: conv(p.a, lenFrom, lenTo, 2), b: conv(p.b, lenFrom, lenTo, 2) },
-  );
-  return {
-    ...line,
-    unit: to,
-    qty: conv(line.qty, from, to, 2),
-    parts: line.qtyType === 'area' ? parts : line.parts,
-    rate: rate ? convertRate(rate, from, to).toString() : line.rate,
-  };
-}
 
 export default function LineScreen() {
   const c = useColors();
@@ -67,6 +43,7 @@ export default function LineScreen() {
   const amount = lineAmount(line);
   const isArea = line.qtyType === 'area';
   const customerQty = line.qtySource === 'customer' && line.qtyType !== 'flat';
+  const size = line.qtyType !== 'flat' ? lineQuantity(line).qty : null;
 
   return (
     <Screen
@@ -99,8 +76,13 @@ export default function LineScreen() {
             testID="line-qtytype"
             options={QTY_TYPES}
             value={line.qtyType}
-            onChange={(v) => set({ qtyType: v, unit: unitFor(v, store.settings.units), qtyMode: 'direct', eachLabel: v === 'each' ? line.eachLabel || 'items' : line.eachLabel })}
+            onChange={(v) => setWhole(switchLineBasis(line, v, store.settings.units, line.kind === 'custom' ? null : store.settings.rates[line.kind as RatedKind]))}
           />
+          {line.basisOrigin && line.basisOrigin.qtyType !== line.qtyType && (line.basisOrigin.qty || line.basisOrigin.parts.length || line.basisOrigin.rate) ? (
+            <T v="small" muted>
+              The earlier size and rate are kept. Switch back to {QTY_TYPES.find((q) => q.value === line.basisOrigin?.qtyType)?.label.toLowerCase()} to use them again.
+            </T>
+          ) : null}
           {line.qtyType === 'area' || line.qtyType === 'linear' ? (
             <Segmented
               compact
@@ -117,7 +99,7 @@ export default function LineScreen() {
                     ]
               }
               value={line.unit}
-              onChange={(v) => setWhole(switchUnit(line, v as Unit))}
+              onChange={(v) => setWhole(switchLineUnit(line, v as Unit))}
             />
           ) : null}
 
@@ -145,7 +127,15 @@ export default function LineScreen() {
               {isArea && line.qtyMode === 'parts' ? (
                 <PartsEditor parts={line.parts} unit={line.unit} onChange={(parts) => set({ parts, qtySource: 'operator' })} testID="line-parts" />
               ) : (
-                <Field value={line.qty} onChangeText={(t) => set({ qty: t, qtySource: 'operator' })} decimal suffix={unitLabel(line.unit, line.eachLabel)} placeholder="0" big testID="line-qty" tone={customerQty ? 'uncertain' : undefined} />
+                <Field
+                  value={line.qty}
+                  onChangeText={(t) => set({ qty: t, qtySource: 'operator' })}
+                  onOtherText={(t) => {
+                    const measured = sizeFromDimensions(line, t);
+                    if (measured) setWhole(measured);
+                  }}
+                  decimal
+                  suffix={unitLabel(line.unit, line.eachLabel)} placeholder="0" big testID="line-qty" tone={customerQty ? 'uncertain' : undefined} />
               )}
               {customerQty ? (
                 <Banner
@@ -162,7 +152,7 @@ export default function LineScreen() {
           {line.treatment === 'priced' ? (
             <Card style={{ gap: 10 }}>
               {line.qtyType === 'flat' ? (
-                <Field label="Price" value={line.price} onChangeText={(t) => set({ price: t })} prefix="$" decimal maxDecimals={2} placeholder="0.00" big testID="line-price" />
+                <Field label="Price" value={line.price} onChangeText={(t) => set({ price: t, rateSource: 'entered' })} prefix="$" decimal maxDecimals={2} placeholder="0.00" big testID="line-price" />
               ) : (
                 <Field
                   label={`Your rate ${perUnitLabel(line.unit, line.eachLabel)}`}
@@ -170,7 +160,7 @@ export default function LineScreen() {
                   onChangeText={(t) => set({ rate: t, rateSource: 'entered' })}
                   prefix="$"
                   decimal
-                  maxDecimals={4}
+                  maxDecimals={6}
                   placeholder="0.00"
                   big
                   testID="line-rate"
@@ -190,6 +180,16 @@ export default function LineScreen() {
                 </T>
               ) : null}
             </Card>
+          ) : null}
+
+          {line.treatment === 'priced' && line.qtyType !== 'flat' && !parseNonNeg(line.rate) && size ? (
+            <RateBuilder
+              line={line}
+              qty={size}
+              ownerRate={store.settings.ownerTarget.state === 'known_value' ? store.settings.ownerTarget.rate : job.draft.ownerTarget.state === 'known_value' ? job.draft.ownerTarget.rate : ''}
+              hourlyCosts={knownHourlyCosts(job.draft)}
+              onUse={(rate) => set({ rate, rateSource: 'entered' })}
+            />
           ) : null}
 
           {line.treatment === 'priced' ? (

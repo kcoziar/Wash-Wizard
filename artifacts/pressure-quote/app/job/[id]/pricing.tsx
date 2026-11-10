@@ -45,6 +45,7 @@ export default function PricingScreen() {
       deposit: { ...p.deposit },
       validDays: job.draft.validDays,
       terms: job.draft.terms,
+      customerNote: job.draft.customerNote,
     }));
     setSaved(true);
   };

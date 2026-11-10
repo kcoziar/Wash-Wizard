@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import { Banner, Button, Card, Screen, SectionLabel, Sheet, T, ToggleRow, haptic } from '@/components/ui';
 import { date, shortDate } from '@/lib/format';
 import { exportBackupFile, pickBackupText } from '@/lib/output';
+import { markBackup, quotesCreated, settingsUntouched } from '@/lib/reminders';
 import { buildBackup, checkBackup, type BackupCheck } from '@/lib/storage';
 import { useStore } from '@/lib/store';
 
@@ -17,7 +18,18 @@ export default function BackupScreen() {
   const [pending, setPending] = useState<Ready | null>(null);
   const [useSettings, setUseSettings] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // A backup only counts once the operator says the file was saved somewhere.
+  const [askSaved, setAskSaved] = useState(false);
   const realJobs = store.jobs.filter((j) => !j.sample);
+
+  const answerSaved = (saved: boolean) => {
+    setAskSaved(false);
+    store.updateMeta((m) => markBackup(m, quotesCreated(store.jobs), Date.now(), saved));
+    if (saved) {
+      haptic('success');
+      setNotice({ tone: 'success', title: 'Backup saved', body: 'Make a new one now and then, especially before you change phones.' });
+    } else setNotice({ tone: 'info', title: 'Not backed up yet', body: 'Export again when you can save the file to Files or iCloud Drive.' });
+  };
 
   const doExport = async () => {
     setBusy('export');
@@ -31,8 +43,7 @@ export default function BackupScreen() {
       setNotice({ tone: 'danger', title: 'The backup file could not be made', body: 'Nothing was changed. Try again, or free up some storage.' });
       return;
     }
-    store.updateMeta((m) => ({ ...m, lastBackupAt: Date.now() }));
-    setNotice({ tone: 'success', title: res === 'downloaded' ? 'Backup downloaded' : 'Backup ready', body: res === 'downloaded' ? 'Check your downloads folder.' : 'Save it to Files, iCloud Drive or send it to yourself.' });
+    setAskSaved(true);
   };
 
   const doPick = async () => {
@@ -49,7 +60,8 @@ export default function BackupScreen() {
       setNotice({ tone: 'danger', title: check.error });
       return;
     }
-    setUseSettings(false);
+    // On a new or reset iPhone, bring the rates, business details and logo back too.
+    setUseSettings(!!check.settings && settingsUntouched(store.settings));
     setPending(check);
   };
 
@@ -59,11 +71,20 @@ export default function BackupScreen() {
     const p = pending;
     setPending(null);
     try {
-      await store.addImported(p.jobs, useSettings ? p.settings : null);
+      const applySettings = useSettings && !!p.settings;
+      const res = await store.addImported(p.jobs, applySettings ? p.settings : null);
+      if (res.notSaved) {
+        setNotice({
+          tone: 'warn',
+          title: `${res.saved} of ${p.jobs.length} jobs added`,
+          body: `The rest could not be saved. Free up some storage and import the same file again; jobs already added are skipped.${applySettings ? ' Settings were not changed.' : ''}`,
+        });
+        return;
+      }
       haptic('success');
       setNotice({
         tone: 'success',
-        title: `Added ${p.jobs.length} ${p.jobs.length === 1 ? 'job' : 'jobs'}`,
+        title: `Added ${p.jobs.length} ${p.jobs.length === 1 ? 'job' : 'jobs'}${applySettings ? ' and settings' : ''}`,
         body: [p.duplicates ? `${p.duplicates} already here, left as they were.` : null, p.skipped ? `${p.skipped} damaged ${p.skipped === 1 ? 'record was' : 'records were'} skipped.` : null].filter(Boolean).join(' ') || undefined,
       });
     } catch {
@@ -135,8 +156,30 @@ export default function BackupScreen() {
                 <ToggleRow title="Also use the backup's settings" subtitle="Rates, business details and defaults replace the current ones" value={useSettings} onChange={setUseSettings} testID="backup-use-settings" />
               </View>
             ) : null}
-            <Button title={pending && pending.jobs.length === 0 ? 'Nothing new to add' : 'Add jobs'} onPress={pending && pending.jobs.length === 0 && !useSettings ? () => setPending(null) : doImport} testID="backup-import-confirm" />
+            <Button
+              title={(() => {
+                const n = pending?.jobs.length ?? 0;
+                const jobs = `${n} ${n === 1 ? 'job' : 'jobs'}`;
+                if (n === 0) return useSettings ? 'Use the settings only' : 'Nothing new to add';
+                return useSettings ? `Add ${jobs} and settings` : `Add ${jobs}`;
+              })()}
+              onPress={pending && pending.jobs.length === 0 && !useSettings ? () => setPending(null) : doImport}
+              testID="backup-import-confirm"
+            />
             <Button variant="ghost" title="Cancel" onPress={() => setPending(null)} />
+          </>
+        }
+      />
+
+      <Sheet
+        visible={askSaved}
+        onClose={() => setAskSaved(false)}
+        title="Did you save the file?"
+        body="Only a file kept in Files, iCloud Drive or another safe place protects your jobs if this iPhone is lost."
+        actions={
+          <>
+            <Button title="Yes, it's saved" onPress={() => answerSaved(true)} testID="backup-saved-yes" />
+            <Button variant="ghost" title="Not yet" onPress={() => answerSaved(false)} testID="backup-saved-no" />
           </>
         }
       />

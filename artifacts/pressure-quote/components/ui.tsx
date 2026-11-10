@@ -20,6 +20,7 @@ import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import Animated, { FadeIn, useAnimatedStyle, useSharedValue, withSequence, withTiming, Easing } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import { useColors } from '@/hooks/useColors';
 import { money, sanitizeDecimal } from '@/lib/format';
@@ -37,6 +38,10 @@ export const F = {
 export const isWeb = Platform.OS === 'web';
 export const WEB_TOP = 67;
 export const WEB_BOTTOM = 34;
+/** Height of the Prev / Next / Done bar shown above the keyboard (react-native-keyboard-controller's KeyboardToolbar). */
+export const KEYBOARD_TOOLBAR_HEIGHT = 42;
+/** What a ref on a Field points to (focus, blur). */
+export type TextInputHandle = React.ComponentRef<typeof TextInput>;
 
 export function haptic(kind: 'tap' | 'select' | 'success' | 'warn' = 'tap') {
   if (Platform.OS === 'web') return;
@@ -173,7 +178,8 @@ export function Screen({
         <KeyboardAwareScrollViewCompat
           style={{ flex: 1 }}
           contentContainerStyle={[{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: bottomPad, gap: 14 }, contentStyle]}
-          bottomOffset={24}
+          bottomOffset={(footer ? 96 : 16) + KEYBOARD_TOOLBAR_HEIGHT}
+          keyboardDismissMode="interactive"
           showsVerticalScrollIndicator={false}
         >
           {children}
@@ -186,15 +192,17 @@ export function Screen({
   );
 }
 
+/** The main action bar. On iPhone it rides above the keyboard and its Done bar, so the main button is never hidden. */
 export function Footer({ children }: { children: React.ReactNode }) {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  return (
+  const padBottom = (isWeb ? WEB_BOTTOM : Math.max(insets.bottom, 12)) + 4;
+  const body = (
     <View
       style={{
         paddingHorizontal: 16,
         paddingTop: 12,
-        paddingBottom: (isWeb ? WEB_BOTTOM : Math.max(insets.bottom, 12)) + 4,
+        paddingBottom: padBottom,
         backgroundColor: c.background,
         borderTopWidth: StyleSheet.hairlineWidth,
         borderTopColor: c.border,
@@ -204,6 +212,9 @@ export function Footer({ children }: { children: React.ReactNode }) {
       {children}
     </View>
   );
+  if (isWeb) return body;
+  // With the keyboard open the home-indicator padding tucks behind the toolbar, leaving a 12 pt gap above it.
+  return <KeyboardStickyView offset={{ closed: 0, opened: padBottom - 12 - KEYBOARD_TOOLBAR_HEIGHT }}>{body}</KeyboardStickyView>;
 }
 
 export function Card({ children, style, onPress, testID, tone }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; onPress?: () => void; testID?: string; tone?: 'uncertain' | 'confirm' | 'alt' }) {
@@ -311,7 +322,8 @@ export function Button({
       }}
       style={({ pressed }) => [
         {
-          height: h,
+          minHeight: h,
+          paddingVertical: size === 'sm' ? 6 : 10,
           borderRadius: size === 'sm' ? 10 : c.radius,
           backgroundColor: p.bg,
           borderWidth: variant === 'outline' ? 1 : 0,
@@ -329,7 +341,7 @@ export function Button({
       ]}
     >
       {loading ? <ActivityIndicator color={p.fg} /> : icon ? <Feather name={icon} size={size === 'sm' ? 15 : 18} color={p.fg} /> : null}
-      <Text style={{ fontFamily: F.semibold, fontSize: size === 'sm' ? 13.5 : 16, color: p.fg }} numberOfLines={1}>
+      <Text style={{ fontFamily: F.semibold, fontSize: size === 'sm' ? 13.5 : 16, color: p.fg, textAlign: 'center', flexShrink: 1 }} numberOfLines={2}>
         {title}
       </Text>
     </Pressable>
@@ -352,14 +364,14 @@ export function IconButton({
   size?: number;
 }) {
   const c = useColors();
-  const bg = tone === 'filled' ? c.secondary : tone === 'hero' ? 'rgba(255,255,255,0.08)' : 'transparent';
+  const bg = tone === 'filled' ? c.secondary : tone === 'hero' ? c.heroGlass : 'transparent';
   const fg = tone === 'hero' ? c.heroForeground : c.foreground;
   return (
     <Pressable
       testID={testID}
       accessibilityRole="button"
       accessibilityLabel={label}
-      hitSlop={8}
+      hitSlop={Math.max(8, Math.ceil((44 - size) / 2))}
       onPress={() => {
         haptic();
         onPress();
@@ -374,7 +386,7 @@ export function IconButton({
 export function TextLink({ title, onPress, testID, color, icon }: { title: string; onPress: () => void; testID?: string; color?: string; icon?: React.ComponentProps<typeof Feather>['name'] }) {
   const c = useColors();
   return (
-    <Pressable testID={testID} accessibilityRole="button" onPress={onPress} hitSlop={8} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 6 })}>
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={title} onPress={onPress} hitSlop={10} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 32 })}>
       {icon ? <Feather name={icon} size={15} color={color ?? c.foreground} /> : null}
       <Text style={{ fontFamily: F.semibold, fontSize: 14, color: color ?? c.foreground, textDecorationLine: icon ? 'none' : 'underline' }}>{title}</Text>
     </Pressable>
@@ -417,9 +429,9 @@ export function Chip({
     fg = c.confirm;
     border = 'transparent';
   } else if (tone === 'hero') {
-    bg = selected ? c.accent : 'rgba(255,255,255,0.07)';
+    bg = selected ? c.accent : c.heroGlass;
     fg = selected ? c.accentForeground : c.heroForeground;
-    border = selected ? c.accent : 'rgba(255,255,255,0.14)';
+    border = selected ? c.accent : c.heroGlassBorder;
   }
   const content = (
     <>
@@ -447,7 +459,9 @@ export function Chip({
     <Pressable
       testID={testID}
       accessibilityRole="button"
+      accessibilityLabel={label}
       accessibilityState={{ selected: !!selected }}
+      hitSlop={small ? { top: 8, bottom: 8, left: 4, right: 4 } : 4}
       onPress={() => {
         haptic('select');
         onPress();
@@ -482,7 +496,9 @@ export function Segmented<V extends string>({
             key={o.value}
             testID={testID ? `${testID}-${o.value}` : undefined}
             accessibilityRole="button"
+            accessibilityLabel={o.label}
             accessibilityState={{ selected: on }}
+            hitSlop={compact ? { top: 6, bottom: 6 } : undefined}
             onPress={() => {
               if (!on) {
                 haptic('select');
@@ -520,6 +536,7 @@ export function Field({
   suffix,
   decimal,
   maxDecimals = 4,
+  onOtherText,
   keyboardType,
   multiline,
   hint,
@@ -534,6 +551,10 @@ export function Field({
   big,
   inputMode,
   textContentType,
+  inputRef,
+  accessibilityLabel,
+  returnKeyType,
+  onSubmitEditing,
 }: {
   label?: string;
   value: string;
@@ -543,6 +564,8 @@ export function Field({
   suffix?: string;
   decimal?: boolean;
   maxDecimals?: number;
+  /** Decimal fields: text that is not a plain number (a pasted "24x36") goes here instead of being ignored. */
+  onOtherText?: (t: string) => void;
   keyboardType?: KeyboardTypeOptions;
   multiline?: boolean;
   hint?: string;
@@ -557,6 +580,10 @@ export function Field({
   big?: boolean;
   inputMode?: 'text' | 'email' | 'tel' | 'decimal' | 'numeric';
   textContentType?: React.ComponentProps<typeof TextInput>['textContentType'];
+  inputRef?: React.Ref<TextInputHandle>;
+  accessibilityLabel?: string;
+  returnKeyType?: React.ComponentProps<typeof TextInput>['returnKeyType'];
+  onSubmitEditing?: () => void;
 }) {
   const c = useColors();
   const [focused, setFocused] = useState(false);
@@ -588,9 +615,21 @@ export function Field({
           </Text>
         ) : null}
         <TextInput
+          ref={inputRef}
           testID={testID}
+          accessibilityLabel={[accessibilityLabel ?? label ?? placeholder, !accessibilityLabel && suffix ? suffix : null].filter(Boolean).join(', ')}
+          accessibilityHint={error ?? hint ?? undefined}
+          returnKeyType={returnKeyType}
+          onSubmitEditing={onSubmitEditing}
           value={value}
-          onChangeText={(t) => onChangeText(decimal ? sanitizeDecimal(t, maxDecimals) : t)}
+          onChangeText={(t) => {
+            if (!decimal) return onChangeText(t);
+            // A change that would alter the number's meaning is ignored rather than guessed at. Deleting
+            // is always allowed, even from a converted value with more decimals than this field takes.
+            const clean = sanitizeDecimal(t, t.length < value.length ? 12 : maxDecimals);
+            if (clean != null) onChangeText(clean);
+            else onOtherText?.(t);
+          }}
           placeholder={placeholder}
           placeholderTextColor={c.faint}
           keyboardType={keyboardType ?? (decimal ? 'decimal-pad' : 'default')}
@@ -757,7 +796,7 @@ export function Row({
   );
   if (!onPress) return inner;
   return (
-    <Pressable testID={testID} accessibilityRole="button" onPress={onPress} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={[title, subtitle, value].filter(Boolean).join(', ')} onPress={onPress} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
       {inner}
     </Pressable>
   );
@@ -777,6 +816,7 @@ export function ToggleRow({ title, subtitle, value, onChange, testID }: { title:
       </View>
       <Switch
         testID={testID}
+        accessibilityLabel={title}
         value={value}
         onValueChange={(v) => {
           haptic('select');
@@ -866,7 +906,7 @@ export function ServiceGlyph({ kind, size = 36, tone = 'card' }: { kind: Service
         width: size,
         height: size,
         borderRadius: size * 0.3,
-        backgroundColor: tone === 'hero' ? 'rgba(200,242,60,0.14)' : c.muted,
+        backgroundColor: tone === 'hero' ? c.heroAccentSoft : c.muted,
         alignItems: 'center',
         justifyContent: 'center',
       }}

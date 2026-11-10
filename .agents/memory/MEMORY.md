@@ -1,1 +1,2 @@
-- [Browser E2E testing](e2e-browser-testing.md) — headless Chromium + playwright-core in /tmp drives the Expo web preview via data-testid; web skips the share sheet and first-quote paywall.
+- [Browser E2E testing](e2e-browser-testing.md) — headless Chromium + playwright-core in /tmp drives the Expo web preview via data-testid; skip setup first; use visible=true.
+- [Quote editing rules](quote-editing-rules.md) — frozen pricing/decimal, unit and basis switch rules, session-only undo, rate-from-time is never a market rate.

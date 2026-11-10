@@ -17,6 +17,9 @@
       "bundleIdentifier": "com.kozipublishing.pressurequote",
       "config": {
         "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "RCTAsyncStorageExcludeFromBackup": false
       }
     },
     "android": {

@@ -1,14 +1,50 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { Button, Card, Chip, Field, haptic, Segmented, ServiceGlyph, T, TextLink, Tick } from '@/components/ui';
+import { Button, Card, Chip, Field, haptic, IconButton, Segmented, ServiceGlyph, T, TextLink, Tick } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
-import { parseNonNeg } from '@/lib/decimal';
+import { type Dec, parseMoneyCents, parseNonNeg } from '@/lib/decimal';
+import { rateFromTime } from '@/lib/economics';
+import { SERVICE_META } from '@/lib/defaults';
 import { partQuantity, partsTotal } from '@/lib/geometry';
-import { duration, makeId, money, moneyRate, number, perUnitLabel, shortDate, unitLabel } from '@/lib/format';
+import { sizeFromDimensions, switchLineBasis, toFlatPrice } from '@/lib/lineEdit';
+import { duration, makeId, money, moneyRate, number, perUnitLabel, rateInput, shortDate, unitLabel } from '@/lib/format';
 import { computeQuote, type CalcLine } from '@/lib/pricing';
 import type { InputState, Job, JobStatus, Line, Part, Question, RatedKind, Settings, Unit } from '@/lib/types';
 import type { Resolution } from '@/lib/resolve';
+
+// ---------- Rate from time ----------
+
+/** For a line with no rate: work one out from the operator's own cleaning time and hourly figure. */
+export function RateBuilder({ line, qty, ownerRate, hourlyCosts, onUse }: { line: Line; qty: Dec; ownerRate: string; hourlyCosts: number; onUse: (rate: string) => void }) {
+  const [minutes, setMinutes] = useState('');
+  const [target, setTarget] = useState(ownerRate);
+  const mins = parseNonNeg(minutes);
+  const pay = parseMoneyCents(target);
+  const rate = mins && pay ? rateFromTime(qty, mins.toNumber(), pay + hourlyCosts) : null;
+  const sizeText = `${number(qty)} ${unitLabel(line.unit, line.eachLabel)}`;
+  return (
+    <Card style={{ gap: 12 }} testID="rate-builder">
+      <View style={{ gap: 4 }}>
+        <T v="bodyStrong">No rate yet? Work one out from your time</T>
+        <T v="small" muted>
+          Uses only your own numbers. It is what covers your time, not what others charge.
+        </T>
+      </View>
+      <Field label={`Cleaning time for ${sizeText}`} value={minutes} onChangeText={setMinutes} suffix="min" decimal maxDecimals={0} placeholder="e.g. 90" testID="rate-builder-minutes" />
+      <Field label="What your time should earn" value={target} onChangeText={setTarget} prefix="$" suffix="per hour" decimal maxDecimals={2} placeholder="e.g. 60" testID="rate-builder-target" />
+      {rate && pay ? (
+        <View style={{ gap: 10 }}>
+          <T v="small" muted testID="rate-builder-result">
+            {`${moneyRate(rate.toString())} ${perUnitLabel(line.unit, line.eachLabel)} pays ${money(pay, { noCents: pay % 100 === 0 })}/h for ${duration(mins?.toNumber() ?? 0)} of cleaning`}
+            {hourlyCosts > 0 ? `, plus ${money(hourlyCosts)}/h in per-hour costs` : ''}. Travel, setup and per-visit costs are checked on the whole visit.
+          </T>
+          <Button size="md" variant="secondary" icon="check" title={`Use ${moneyRate(rate.toString())} ${perUnitLabel(line.unit, line.eachLabel)}`} onPress={() => onUse(rateInput(rate))} testID="rate-builder-use" />
+        </View>
+      ) : null}
+    </Card>
+  );
+}
 
 // ---------- Status ----------
 
@@ -25,12 +61,12 @@ export function StatusChip({ status, sample, hero }: { status: JobStatus; sample
   const c = useColors();
   const tone =
     status === 'accepted' || status === 'completed'
-      ? { bg: hero ? 'rgba(200,242,60,0.16)' : c.confirmSoft, fg: hero ? c.accent : c.confirm }
+      ? { bg: hero ? c.heroAccentSoft : c.confirmSoft, fg: hero ? c.accent : c.confirm }
       : status === 'declined'
-        ? { bg: hero ? 'rgba(255,107,94,0.16)' : c.destructiveSoft, fg: hero ? c.heroDanger : c.destructive }
+        ? { bg: hero ? c.heroDangerSoft : c.destructiveSoft, fg: hero ? c.heroDanger : c.destructive }
         : status === 'draft'
-          ? { bg: hero ? 'rgba(255,255,255,0.08)' : c.muted, fg: hero ? c.heroMuted : c.mutedForeground }
-          : { bg: hero ? 'rgba(255,255,255,0.12)' : c.secondary, fg: hero ? c.heroForeground : c.foreground };
+          ? { bg: hero ? c.heroGlass : c.muted, fg: hero ? c.heroMuted : c.mutedForeground }
+          : { bg: hero ? c.heroGlassStrong : c.secondary, fg: hero ? c.heroForeground : c.foreground };
   return (
     <View style={{ flexDirection: 'row', gap: 6 }}>
       {sample ? (
@@ -58,12 +94,12 @@ export function jobTotal(job: Job): { cents: number | null; frozen: boolean } {
   return { cents: null, frozen: false };
 }
 
-export function JobRow({ job, onPress }: { job: Job; onPress: () => void }) {
+export function JobRow({ job, onPress, onSimilar }: { job: Job; onPress: () => void; onSimilar?: () => void }) {
   const c = useColors();
   const total = useMemo(() => jobTotal(job), [job]);
   const kind = job.draft.lines[0]?.kind ?? 'custom';
   const ref = job.revisions.length ? job.revisions[job.revisions.length - 1].reference : job.sample ? 'SAMPLE' : `Q-${String(job.number).padStart(4, '0')}`;
-  return (
+  const row = (
     <Card onPress={onPress} testID={`job-row-${job.id}`} style={{ padding: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
         <ServiceGlyph kind={kind} size={40} />
@@ -84,6 +120,15 @@ export function JobRow({ job, onPress }: { job: Job; onPress: () => void }) {
         </View>
       </View>
     </Card>
+  );
+  if (!onSimilar) return row;
+  return (
+    <View style={{ gap: 2 }}>
+      {row}
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 4 }}>
+        <TextLink title="Quote similar work" icon="copy" color={c.mutedForeground} onPress={onSimilar} testID={`job-similar-${job.id}`} />
+      </View>
+    </View>
   );
 }
 
@@ -118,14 +163,23 @@ export function LineCard({
   const c = useColors();
   const needs = needsText(calcLine, line);
   const rated = line.kind !== 'custom' ? settings.rates[line.kind as RatedKind] : null;
+  const flat = line.qtyType === 'flat';
+  // A flat line's saved value is its price; every other line's is its rate.
+  const value = flat ? line.price : line.rate;
+  const valueText = (v: string, r: { unit: Unit; eachLabel: string } = line) => (flat ? money(parseMoneyCents(v) ?? 0) : `${moneyRate(v)} ${perUnitLabel(r.unit, r.eachLabel)}`);
+  // A copied or reopened job can carry a rate that is no longer the saved one: no tick then, and the operator chooses.
+  const matchesSaved = !!rated && rated.rate.trim() !== '' && rated.rate === value && rated.qtyType === line.qtyType && (flat || rated.unit === line.unit);
   const ratePrompt = useMemo(() => {
-    if (!rated || line.rateSource !== 'entered' || line.treatment !== 'priced') return null;
-    if (rated.qtyType !== line.qtyType) return null;
-    const r = parseNonNeg(line.rate);
+    if (!rated || (line.rateSource !== 'entered' && line.rateSource !== 'saved') || line.treatment !== 'priced') return null;
+    // A different way of pricing only becomes the usual when nothing is saved for this service yet.
+    if (rated.qtyType !== line.qtyType && rated.rate.trim() !== '') return null;
+    const r = parseNonNeg(value);
     if (!r || r.isZero()) return null;
-    if (rated.rate === line.rate && rated.unit === line.unit) return null;
-    return { saved: rated.rate ? `${moneyRate(rated.rate)} ${perUnitLabel(rated.unit, rated.eachLabel)}` : null };
-  }, [rated, line]);
+    if (matchesSaved) return null;
+    return { saved: rated.rate.trim() && rated.qtyType === line.qtyType ? valueText(rated.rate, rated) : null };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rated, line, matchesSaved, value]);
+  const rateMissing = line.treatment === 'priced' && !flat && !parseNonNeg(line.rate);
 
   const customerQty = line.qtySource === 'customer' && line.qtyType !== 'flat' && (line.qty.trim() !== '' || line.parts.length > 0);
   const muted = line.treatment === 'excluded';
@@ -174,12 +228,13 @@ export function LineCard({
           <Field
             testID={testID ? `${testID}-price` : undefined}
             value={line.price}
-            onChangeText={(t) => onChange({ ...line, price: t })}
+            onChangeText={(t) => onChange({ ...line, price: t, rateSource: 'entered' })}
             prefix="$"
             decimal
             maxDecimals={2}
             placeholder="Price"
-            tone={!line.price ? 'uncertain' : undefined}
+            accessibilityLabel={`${line.name || 'Service'} price`}
+            tone={!line.price ? 'uncertain' : matchesSaved ? 'confirm' : undefined}
           />
         ) : (
           <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -213,9 +268,14 @@ export function LineCard({
                 testID={testID ? `${testID}-qty` : undefined}
                 value={line.qty}
                 onChangeText={(t) => onChange({ ...line, qty: t, qtySource: 'operator' })}
+                onOtherText={(t) => {
+                  const measured = sizeFromDimensions(line, t);
+                  if (measured) onChange(measured);
+                }}
                 suffix={unitText}
                 decimal
                 placeholder={line.qtyType === 'each' ? 'How many' : 'Size'}
+                accessibilityLabel={`${line.name || 'Service'} ${line.qtyType === 'each' ? `number of ${line.eachLabel || 'items'}` : 'size'} in ${unitText}`}
                 tone={customerQty || !line.qty ? 'uncertain' : undefined}
               />
             )}
@@ -227,9 +287,10 @@ export function LineCard({
               prefix="$"
               suffix={perUnitLabel(line.unit, line.eachLabel)}
               decimal
-              maxDecimals={4}
+              maxDecimals={6}
               placeholder="Rate"
-              tone={!line.rate ? 'uncertain' : line.rateSource === 'saved' ? 'confirm' : undefined}
+              accessibilityLabel={`${line.name || 'Service'} rate in dollars ${perUnitLabel(line.unit, line.eachLabel).replace('/ ', 'per ')}`}
+              tone={!line.rate ? 'uncertain' : line.rateSource === 'saved' && matchesSaved ? 'confirm' : undefined}
             />
           </View>
         )
@@ -243,12 +304,36 @@ export function LineCard({
         </View>
       ) : null}
 
+      {rateMissing ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 18 }}>
+          <TextLink title="Work out my rate" icon="clock" color={c.mutedForeground} onPress={onOpen} testID={testID ? `${testID}-build-rate` : undefined} />
+          <TextLink
+            title="I already know the price"
+            icon="tag"
+            color={c.mutedForeground}
+            onPress={() => onChange(toFlatPrice(line, calcLine?.qty ? `${number(calcLine.qty)} ${unitText}` : null))}
+            testID={testID ? `${testID}-flat` : undefined}
+          />
+        </View>
+      ) : null}
+      {flat && rated && line.treatment === 'priced' ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14 }}>
+          <TextLink
+            title="Price by size instead"
+            icon="maximize"
+            color={c.mutedForeground}
+            onPress={() => onChange(switchLineBasis(line, rated.qtyType === 'flat' ? SERVICE_META[line.kind].qtyType : rated.qtyType, settings.units, rated))}
+            testID={testID ? `${testID}-by-size` : undefined}
+          />
+        </View>
+      ) : null}
+
       {ratePrompt ? (
         <View style={{ backgroundColor: c.cardAlt, borderRadius: 12, padding: 12, gap: 10, borderWidth: 1, borderColor: c.border }}>
           <T v="small">
             {ratePrompt.saved
-              ? `Your saved ${line.kind} rate is ${ratePrompt.saved}. Use ${moneyRate(line.rate)} for:`
-              : `Save ${moneyRate(line.rate)} ${perUnitLabel(line.unit, line.eachLabel)} as your ${line.kind} rate for next time?`}
+              ? `Your saved ${line.kind} ${flat ? 'price' : 'rate'} is ${ratePrompt.saved}. Use ${flat ? valueText(value) : moneyRate(line.rate)} for:`
+              : `Save ${valueText(value)} as your ${line.kind} ${flat ? 'price' : 'rate'} for next time?`}
           </T>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Button size="sm" variant="outline" title="This job only" flex onPress={() => onChange({ ...line, rateSource: 'built' })} testID={testID ? `${testID}-rate-job` : undefined} />
@@ -303,28 +388,65 @@ export function QuestionCard({
                 <Chip key={k} label={`Use for ${k}`} onPress={() => run({ kind: 'assign', service: k })} testID={`${testID}-assign-${k}`} />
               ))}
             </View>
-            <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} />
+            <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
           </>
         );
       break;
     case 'missing_qty':
-      actions = (
+      actions = group[0] ? (
         <>
           <Button size="md" variant="primary" title="Enter the size" onPress={() => setMode('qty')} testID={`${testID}-qty`} />
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Button size="md" variant="outline" title="Include free" flex onPress={() => run({ kind: 'free' })} />
-            <Button size="md" variant="outline" title="Measure on site" flex onPress={() => run({ kind: 'measure' })} />
+            <Button size="md" variant="outline" title="Measure on site" flex onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
+            <Button size="md" variant="outline" title="Include free" flex onPress={() => run({ kind: 'free' })} testID={`${testID}-free`} />
+          </View>
+          <Button size="md" variant="ghost" title={`Take ${group[0].name.toLowerCase()} off the quote`} onPress={() => run({ kind: 'remove' })} testID={`${testID}-remove`} />
+        </>
+      ) : (
+        // A size the reader could not place on one surface: the operator decides on the line itself.
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Button size="md" variant="outline" title="Measure on site" flex onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
+          <Button size="md" variant="outline" title="Got it" flex onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
+        </View>
+      );
+      break;
+    case 'amount_meaning':
+      // A per-unit amount ("$0.15/sq ft") is never a budget for the whole job.
+      actions = question.payload.label ? (
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Button size="md" variant="primary" title="Save as a note" flex onPress={() => run({ kind: 'note' })} testID={`${testID}-note`} />
+          <Button size="md" variant="outline" title="Ignore" flex onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
+        </View>
+      ) : (
+        <>
+          <Button size="md" variant="primary" title="It's their budget (private)" onPress={() => run({ kind: 'budget' })} testID={`${testID}-budget`} />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="outline" title="Save as a note" flex onPress={() => run({ kind: 'note' })} testID={`${testID}-note`} />
+            <Button size="md" variant="outline" title="Ignore" flex onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
           </View>
         </>
       );
       break;
-    case 'amount_meaning':
+    case 'extra_measure':
       actions = (
         <>
-          <Button size="md" variant="primary" title="It's their budget (private)" onPress={() => run({ kind: 'budget' })} testID={`${testID}-budget`} />
+          {group[0] && question.payload.area ? (
+            <>
+              <Button size="md" variant="primary" title="Use this size instead" onPress={() => run({ kind: 'replace' })} testID={`${testID}-replace`} />
+              <Button size="md" variant="outline" title={`Add a second ${group[0].name.toLowerCase()}`} onPress={() => run({ kind: 'second' })} testID={`${testID}-second`} />
+            </>
+          ) : null}
+          <Button size="md" variant="ghost" title="Keep the first size" onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
+        </>
+      );
+      break;
+    case 'scope':
+      actions = (
+        <>
+          <Button size="md" variant="primary" title="Keep it listed as not included" onPress={() => run({ kind: 'keep_excluded' })} testID={`${testID}-keep`} />
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Button size="md" variant="outline" title="Save as a note" flex onPress={() => run({ kind: 'note' })} />
-            <Button size="md" variant="outline" title="Ignore" flex onPress={() => run({ kind: 'ignore' })} />
+            <Button size="md" variant="outline" title="Remove it" flex onPress={() => run({ kind: 'remove' })} testID={`${testID}-remove`} />
+            <Button size="md" variant="outline" title="Price it anyway" flex onPress={() => run({ kind: 'include' })} testID={`${testID}-include`} />
           </View>
         </>
       );
@@ -568,4 +690,44 @@ export function CostRow<E extends { state: InputState; amount: string; basis: 'v
       ) : null}
     </View>
   );
+}
+
+// ---------- Offer ----------
+
+/** A calm, dismissible offer after a free quote. It never interrupts the send flow. */
+/** One calm, dismissible line: tap to act, X to put it away. */
+export function NoticeCard({
+  icon,
+  title,
+  body,
+  onOpen,
+  onDismiss,
+  testID,
+}: {
+  icon: React.ComponentProps<typeof Feather>['name'];
+  title: string;
+  body: string;
+  onOpen: () => void;
+  onDismiss: () => void;
+  testID: string;
+}) {
+  const c = useColors();
+  return (
+    <Card tone="alt" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }} testID={testID}>
+      <Pressable onPress={onOpen} accessibilityRole="button" accessibilityLabel={`${title}. ${body}`} style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, opacity: pressed ? 0.6 : 1 })} testID={`${testID}-open`}>
+        <Feather name={icon} size={18} color={c.foreground} />
+        <View style={{ flex: 1 }}>
+          <T v="bodyStrong">{title}</T>
+          <T v="small" muted>
+            {body}
+          </T>
+        </View>
+      </Pressable>
+      <IconButton icon="x" label="Dismiss" size={32} onPress={onDismiss} testID={`${testID}-dismiss`} />
+    </Card>
+  );
+}
+
+export function OfferCard({ remaining, onOpen, onDismiss }: { remaining: number; onOpen: () => void; onDismiss: () => void }) {
+  return <NoticeCard icon="star" title={`${remaining} free ${remaining === 1 ? 'quote' : 'quotes'} left`} body="See what Pro adds" onOpen={onOpen} onDismiss={onDismiss} testID="offer-card" />;
 }

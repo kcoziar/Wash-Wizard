@@ -38,7 +38,7 @@ export function derivedWorkMinutes(draft: Draft, settings: Settings): number | n
   let any = false;
   for (const line of draft.lines) {
     if (line.treatment === 'excluded') continue;
-    if (!RATED.includes(line.kind as RatedKind)) return null;
+    if (!RATED.includes(line.kind as RatedKind) || line.qtyType === 'flat') return null;
     const rate = settings.rates[line.kind as RatedKind];
     const production = parseNonNeg(rate.production);
     if (!production || production.isZero() || rate.unit !== line.unit) return null;
@@ -76,6 +76,37 @@ export function supportedMinutes(revenue: number, fixed: number, targetPerHour: 
   const num = revenue - fixed;
   if (num <= 0) return 0;
   return Math.floor((num * 60) / den);
+}
+
+/** Per-hour costs for a visit length, rounded HALF_UP to the cent. */
+export function hourlyCostCents(perHourCents: number, minutes: number): number | null {
+  if (perHourCents === 0) return 0;
+  const m = Dec.parse(String(minutes));
+  if (!m) return null;
+  const v = Dec.cents(perHourCents).mul(m).div(Dec.int(60), 2, 'half_up');
+  return v ? v.toCents('half_up') : null;
+}
+
+/** The job's known per-hour costs (paid help, equipment wear and so on), in cents per hour. */
+export function knownHourlyCosts(draft: Draft): number {
+  let cents = 0;
+  for (const k of COST_KEYS) {
+    const e = draft.costs[k];
+    if (e.basis !== 'hour' || e.state !== 'known_value') continue;
+    cents += parseMoneyCents(e.amount) ?? 0;
+  }
+  return cents;
+}
+
+/**
+ * A rate built only from the operator's own numbers: the cleaning time at their hourly figure,
+ * spread over the size and rounded up to cover it. A cost-covering figure, never a market rate.
+ */
+export function rateFromTime(qty: Dec, minutes: number, perHourCents: number): Dec | null {
+  if (qty.sign() <= 0 || !Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(perHourCents) || perHourCents <= 0) return null;
+  const m = Dec.parse(String(minutes));
+  if (!m) return null;
+  return Dec.cents(perHourCents).mul(m).div(qty.mul(Dec.int(60)), 4, 'up');
 }
 
 export function visitMinutes(draft: Draft, settings: Settings): { minutes: number | null; missing: string[]; workDerived: boolean } {
@@ -121,7 +152,9 @@ export function computeEconomics(draft: Draft, calc: Calc, settings: Settings, r
   const hours = minutes != null ? minutes / 60 : null;
 
   const revenuePerHour = hours && hours > 0 ? revenue / hours : null;
-  const costs = costsKnown && hours != null ? Math.round(fixedCosts + perHourCosts * hours) : null;
+  // Hourly costs follow the same decimal rounding as every other stored amount (HALF_UP to the cent).
+  const hourly = minutes != null ? hourlyCostCents(perHourCosts, minutes) : null;
+  const costs = costsKnown && hourly != null ? fixedCosts + hourly : null;
   const available = costs != null ? revenue - costs : null;
   const availablePerHour = available != null && hours && hours > 0 ? available / hours : null;
 
@@ -129,7 +162,9 @@ export function computeEconomics(draft: Draft, calc: Calc, settings: Settings, r
   const afterTarget = available != null && target != null && hours != null ? Math.round(available - target * hours) : null;
   const margin = afterTarget != null && revenue > 0 ? afterTarget / revenue : null;
   const supported = costsKnown && target != null ? supportedMinutes(revenue, fixedCosts, target, perHourCosts) : null;
-  const verdict: Econ['verdict'] = supported != null && minutes != null ? (minutes <= supported ? 'meets' : 'below') : 'unknown';
+  // The verdict uses the exact figures; only the displayed supported time is rounded down to a minute.
+  const verdict: Econ['verdict'] =
+    costsKnown && target != null && minutes != null && target + perHourCosts > 0 ? ((revenue - fixedCosts) * 60 >= (target + perHourCosts) * minutes ? 'meets' : 'below') : 'unknown';
 
   return {
     revenue,
@@ -175,7 +210,8 @@ export function markupOf(priceCents: number, costCents: number): number | null {
 }
 
 export interface Suggestion {
-  minutes: number;
+  /** Cleaning time only. Travel, setup and pack-up are the operator's own entries for this visit. */
+  workMinutes: number;
   low: number;
   high: number;
   count: number;
@@ -184,23 +220,30 @@ export interface Suggestion {
   kind: RatedKind;
 }
 
-/** Whole-visit time suggestion from at least five of the operator's own completed, relevant records. */
-export function suggestVisitMinutes(jobs: Job[], draft: Draft, currentJobId: string): Suggestion | null {
-  const primary = draft.lines.find((l) => l.treatment !== 'excluded' && RATED.includes(l.kind as RatedKind) && l.qtyType === 'area');
-  if (!primary) return null;
+/**
+ * Cleaning-time suggestion from at least five of the operator's own finished jobs of the same single
+ * surface, scaled by area. Only the separately recorded cleaning time is scaled, never a whole visit,
+ * so known travel and setup are never contradicted. Jobs that mixed surfaces are left out.
+ */
+export function suggestWorkMinutes(jobs: Job[], draft: Draft, currentJobId: string): Suggestion | null {
+  const priced = (d: Draft) => d.lines.filter((l) => l.treatment !== 'excluded');
+  const lines = priced(draft);
+  const primary = lines[0];
+  if (!primary || !RATED.includes(primary.kind as RatedKind) || primary.qtyType !== 'area') return null;
   const kind = primary.kind as RatedKind;
   const unit = primary.unit;
+  /** Total area when every priced line is this one surface in this unit; otherwise not comparable. */
   const areaOf = (d: Draft): number | null => {
+    const ls = priced(d);
+    if (!ls.length) return null;
     let sum = 0;
-    let found = false;
-    for (const l of d.lines) {
-      if (l.treatment === 'excluded' || l.kind !== kind || l.unit !== unit) continue;
+    for (const l of ls) {
+      if (l.kind !== kind || l.unit !== unit || l.qtyType !== 'area') return null;
       const { qty } = lineQuantity(l);
       if (!qty) return null;
       sum += qty.toNumber();
-      found = true;
     }
-    return found && sum > 0 ? sum : null;
+    return sum > 0 ? sum : null;
   };
   const current = areaOf(draft);
   if (!current) return null;
@@ -208,20 +251,20 @@ export function suggestVisitMinutes(jobs: Job[], draft: Draft, currentJobId: str
   const samples: { perUnit: number; at: number }[] = [];
   for (const j of jobs) {
     if (j.id === currentJobId || j.sample || !j.useForSuggestions || j.status !== 'completed' || !j.outcome) continue;
-    if (j.outcome.minutes.state !== 'known_value') continue;
-    const mins = parseNonNeg(j.outcome.minutes.minutes)?.toNumber();
+    if (j.outcome.workMinutes.state !== 'known_value') continue;
+    const mins = parseNonNeg(j.outcome.workMinutes.minutes)?.toNumber();
     const basis = j.revisions.length ? j.revisions[j.revisions.length - 1].inputs : j.draft;
     const area = areaOf(basis);
     if (!mins || !area) continue;
     samples.push({ perUnit: mins / area, at: j.outcome.completedAt });
   }
   if (samples.length < 5) return null;
-  const sorted = samples.map((s) => s.perUnit).sort((a, b) => a - b);
+  const sorted = samples.map((x) => x.perUnit).sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  const times = samples.map((s) => s.at);
+  const times = samples.map((x) => x.at);
   return {
-    minutes: Math.round((median * current) / 5) * 5,
+    workMinutes: Math.max(5, Math.round((median * current) / 5) * 5),
     low: Math.round(sorted[0] * current),
     high: Math.round(sorted[sorted.length - 1] * current),
     count: samples.length,

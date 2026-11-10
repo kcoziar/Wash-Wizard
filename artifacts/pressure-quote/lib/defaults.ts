@@ -45,6 +45,8 @@ export function unitFor(qtyType: QuantityType, system: UnitSystem): Unit {
   }
 }
 
+export const DEFAULT_CUSTOMER_NOTE = 'Reply YES to book.';
+
 export function defaultSettings(): Settings {
   const rate = (kind: RatedKind) => {
     const meta = SERVICE_META[kind];
@@ -78,6 +80,8 @@ export function defaultSettings(): Settings {
       disposal: { state: 'unknown', amount: '', basis: 'visit' },
       overhead: { state: 'unknown', amount: '', basis: 'visit' },
     },
+    customerNote: DEFAULT_CUSTOMER_NOTE,
+    customServices: [],
   };
 }
 
@@ -85,7 +89,10 @@ export function newLine(kind: ServiceKind, settings: Settings, name?: string): L
   const meta = SERVICE_META[kind];
   const rated = kind === 'custom' ? null : settings.rates[kind];
   const qtyType = rated?.qtyType ?? meta.qtyType;
-  const rate = rated?.rate ?? '';
+  const saved = rated?.rate ?? '';
+  // A saved flat price fills the price; any other saved rate fills the rate.
+  const rate = qtyType === 'flat' ? '' : saved;
+  const price = qtyType === 'flat' ? saved : '';
   return {
     id: makeId('l'),
     kind,
@@ -99,8 +106,8 @@ export function newLine(kind: ServiceKind, settings: Settings, name?: string): L
     parts: [],
     qtySource: 'operator',
     rate,
-    rateSource: rate ? 'saved' : 'none',
-    price: '',
+    rateSource: saved ? 'saved' : 'none',
+    price,
     treatment: 'priced',
     taxable: rated?.taxable ?? true,
     discountable: true,
@@ -145,7 +152,7 @@ export function newDraft(settings: Settings, kinds: ServiceKind[] = []): Draft {
       deposit: { ...settings.deposit },
     },
     customer: { name: '', phone: '', email: '', address: '', source: 'operator' },
-    customerNote: '',
+    customerNote: settings.customerNote,
     terms: settings.terms,
     validDays: settings.validDays,
     visit: visitFromSettings(settings),

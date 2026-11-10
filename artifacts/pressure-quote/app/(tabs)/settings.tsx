@@ -7,6 +7,7 @@ import { useColors } from '@/hooks/useColors';
 import { APP_NAME, COMPANY } from '@/constants/legal';
 import { RATED_KINDS } from '@/lib/defaults';
 import { date, shortDate } from '@/lib/format';
+import { track } from '@/lib/analytics';
 import { useSubscription } from '@/lib/revenuecat';
 import { useStore } from '@/lib/store';
 import { FREE_QUOTES } from '@/lib/types';
@@ -22,16 +23,20 @@ export default function SettingsScreen() {
   const ratesSet = RATED_KINDS.filter((k) => s.rates[k].rate.trim() !== '').length;
 
   const restore = async () => {
+    if (restoring) return;
     setRestoring(true);
     setNotice(null);
     const res = await sub.restore();
     setRestoring(false);
+    if (res.kind === 'restored') track('restore', 'settings');
     setNotice(
       res.kind === 'restored'
         ? { tone: 'success', text: 'Pro restored. Unlimited quotes are on.' }
         : res.kind === 'nothing'
           ? { tone: 'info', text: 'No active purchase was found for this Apple ID.' }
-          : { tone: 'danger', text: res.message },
+          : res.kind === 'busy'
+            ? { tone: 'info', text: 'A purchase or restore is already running. Wait a moment, then try again.' }
+            : { tone: 'danger', text: res.message },
     );
   };
 
@@ -69,7 +74,7 @@ export default function SettingsScreen() {
           {sub.isPro ? (
             <Button size="sm" variant="outline" title="Manage" onPress={() => sub.openManage()} testID="settings-manage" />
           ) : sub.status !== 'unavailable' ? (
-            <Button size="sm" title="See Pro" icon="star" onPress={() => router.push('/paywall')} testID="settings-see-pro" />
+            <Button size="sm" title="See Pro" icon="star" onPress={() => router.push({ pathname: '/paywall', params: { from: 'settings' } })} testID="settings-see-pro" />
           ) : null}
         </View>
         {sub.status === 'unreachable' ? <Button size="sm" variant="outline" title="Try again" onPress={() => sub.refresh()} /> : null}

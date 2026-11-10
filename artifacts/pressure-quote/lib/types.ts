@@ -44,6 +44,25 @@ export interface Line {
   treatment: 'priced' | 'free' | 'excluded';
   taxable: boolean;
   discountable: boolean;
+  /** Values from before the last unit switch, restored exactly on switching back (this session only). */
+  unitOrigin?: LineOrigin;
+  /** Values from before the last change of pricing basis, restored on switching back (this session only). */
+  basisOrigin?: LineOrigin;
+}
+
+/** A snapshot of how a line was measured and priced, kept so a switch can be undone exactly. */
+export interface LineOrigin {
+  qtyType: QuantityType;
+  unit: Unit;
+  eachLabel: string;
+  qtyMode: 'direct' | 'parts';
+  qty: string;
+  parts: Part[];
+  qtySource: Source;
+  rate: string;
+  rateSource: Line['rateSource'];
+  /** The values right after the switch. The snapshot is used only while these are unchanged. */
+  after: string;
 }
 
 export type TimeKey = 'travel' | 'setup' | 'work' | 'cleanup' | 'admin';
@@ -92,7 +111,7 @@ export interface Budget {
   evidence: string;
 }
 
-export type QuestionKind = 'combined_area' | 'missing_qty' | 'amount_meaning' | 'other_service' | 'condition';
+export type QuestionKind = 'combined_area' | 'missing_qty' | 'amount_meaning' | 'other_service' | 'condition' | 'extra_measure' | 'scope';
 
 export interface Question {
   id: string;
@@ -103,7 +122,8 @@ export interface Question {
   lineIds: string[];
   resolved: boolean;
   answer: string;
-  payload: { area?: string; unit?: Unit; amount?: string; label?: string };
+  /** from: 'operator' when the question came from the operator's own notes, so sizes it sets are not customer-supplied. */
+  payload: { area?: string; unit?: Unit; amount?: string; label?: string; from?: 'operator' };
 }
 
 export interface Draft {
@@ -171,8 +191,9 @@ export interface ShareRecord {
   id: string;
   revisionId: string;
   at: number;
-  channel: 'pdf' | 'text' | 'copy';
-  state: 'opened' | 'closed' | 'failed' | 'marked_sent';
+  channel: 'pdf' | 'text' | 'copy' | 'sms';
+  /** 'sent' is reported by Messages itself; it means sent from Messages, never delivered. */
+  state: 'opened' | 'closed' | 'failed' | 'marked_sent' | 'sent' | 'cancelled';
 }
 
 export interface Outcome {
@@ -233,6 +254,21 @@ export interface Settings {
   marginTarget: { state: InputState; percent: string };
   visit: Record<Exclude<TimeKey, 'work'>, { state: InputState; minutes: string }>;
   costs: Record<CostKey, { state: InputState; amount: string; basis: 'visit' | 'hour' }>;
+  /** Default note printed on new quotes. */
+  customerNote: string;
+  /** The operator's own services, shown as chips after the built-in ones. */
+  customServices: SavedService[];
+}
+
+export interface SavedService {
+  id: string;
+  name: string;
+  qtyType: QuantityType;
+  unit: Unit;
+  eachLabel: string;
+  /** Per-unit rate, or the flat price when qtyType is 'flat'. Blank = not set. */
+  rate: string;
+  taxable: boolean;
 }
 
 export interface Meta {
@@ -242,7 +278,21 @@ export interface Meta {
   firstOfferShown: boolean;
   reviewRequestedAt: number | null;
   meaningfulActions: number;
+  /** Set only after the user confirms the exported file was saved somewhere. */
   lastBackupAt: number | null;
+  /** First-run setup finished or skipped. Existing installs are marked done on load. */
+  onboarded: boolean;
+  /** Unfinished text in the "From a customer's message" screen. */
+  captureDraft: string;
+  /** Backup reminder: quotes created and time when it was last answered or dismissed. */
+  backupMarkQuotes: number;
+  backupMarkAt: number | null;
+  /** The calm "See what Pro adds" card after the first free quote. */
+  offerCardDismissed: boolean;
+  /** "That was your last free quote" has been shown. */
+  lastFreeNoticeShown: boolean;
+  /** "Pro ended" card dismissed at. */
+  endedCardDismissedAt: number | null;
 }
 
 export interface LedgerEntry {

@@ -1,15 +1,22 @@
-import React, { useMemo, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
+import { router, useFocusEffect } from 'expo-router';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { JobRow } from '@/components/job';
+import { JobRow, NoticeCard, OfferCard } from '@/components/job';
 import { Banner, Button, Card, Chip, HeroCard, IconButton, Screen, SectionLabel, T, haptic } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
+import { track } from '@/lib/analytics';
 import { RATED_KINDS, newDraft, sampleDraft } from '@/lib/defaults';
+import { REQUEST_LIMIT, draftFromRequest, parseRequest } from '@/lib/parser';
+import { backupDue, markBackup, quotesCreated } from '@/lib/reminders';
 import { useSubscription } from '@/lib/revenuecat';
 import { useStore } from '@/lib/store';
 import { FREE_QUOTES, type ServiceKind } from '@/lib/types';
+
+/** The iPhone's own Paste control reads the clipboard only when tapped, without the "Allow Paste" prompt. */
+const NATIVE_PASTE = Platform.OS === 'ios' && Clipboard.isPasteButtonAvailable;
 
 const PICKS: { kind: ServiceKind; label: string; icon: React.ComponentProps<typeof Chip>['mci'] }[] = [
   { kind: 'driveway', label: 'Driveway', icon: 'road-variant' },
@@ -32,9 +39,75 @@ export default function HomeScreen() {
   const remaining = Math.max(0, FREE_QUOTES - store.freeUsed);
   const realJobs = store.jobs.filter((j) => !j.sample).length;
 
+  const created = quotesCreated(store.jobs);
+  const showBackup = store.ready && backupDue(store.meta, created, Date.now());
+  const showEnded = sub.status === 'expired' && store.meta.endedCardDismissedAt == null;
+
   const toggle = (k: ServiceKind) => setPicked((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
 
+  // A second tap while the first is still navigating must not create a second draft.
+  const navigating = useRef(false);
+  // Whether the clipboard holds text. This check never reads the text itself.
+  const [clipHasText, setClipHasText] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      navigating.current = false;
+      if (Platform.OS === 'web') return;
+      let alive = true;
+      Clipboard.hasStringAsync()
+        .then((has) => alive && setClipHasText(has))
+        .catch(() => alive && setClipHasText(false));
+      return () => {
+        alive = false;
+      };
+    }, []),
+  );
+
+  // First run: the short, skippable setup, shown once.
+  const welcomed = useRef(false);
+  useEffect(() => {
+    if (!store.ready || store.loadError || store.meta.onboarded || welcomed.current) return;
+    welcomed.current = true;
+    router.push('/welcome');
+  }, [store.ready, store.loadError, store.meta.onboarded]);
+
+  // Pasted text is always a customer's message. With a service found, go straight to the job.
+  const fromPaste = (raw: string) => {
+    if (navigating.current) return;
+    const text = raw.trim();
+    if (!text) return;
+    track('paste_used');
+    navigating.current = true;
+    const parsed = text.length <= REQUEST_LIMIT ? parseRequest(text, { units: store.settings.units, mode: 'customer' }) : null;
+    if (parsed && parsed.services.length) {
+      const job = store.createJob(draftFromRequest(parsed, store.settings), { request: text });
+      haptic('success');
+      router.push({ pathname: '/job/[id]', params: { id: job.id } });
+    } else router.push({ pathname: '/capture', params: { text } });
+  };
+
+  const pasteFallback = async () => {
+    try {
+      const t = await Clipboard.getStringAsync();
+      if (t.trim()) fromPaste(t);
+      else router.push('/capture');
+    } catch {
+      router.push('/capture');
+    }
+  };
+
+  const similar = (jobId: string) => {
+    if (navigating.current) return;
+    const job = store.similarJob(jobId);
+    if (!job) return;
+    navigating.current = true;
+    haptic('success');
+    router.push({ pathname: '/job/[id]', params: { id: job.id } });
+  };
+
   const start = () => {
+    if (navigating.current) return;
+    navigating.current = true;
     const job = store.createJob(newDraft(store.settings, picked));
     setPicked([]);
     haptic('success');
@@ -42,6 +115,8 @@ export default function HomeScreen() {
   };
 
   const openSample = () => {
+    if (navigating.current) return;
+    navigating.current = true;
     const job = sample ?? store.createJob(sampleDraft(store.settings), { sample: true });
     router.push({ pathname: '/job/[id]/preview', params: { id: job.id, from: 'home' } });
   };
@@ -49,13 +124,13 @@ export default function HomeScreen() {
   const badge = sub.isPro ? (
     <Chip small tone="confirm" icon="star" label="Pro" onPress={() => router.push('/settings')} testID="home-pro-badge" />
   ) : sub.status === 'checking' ? null : (
-    <Chip small label={remaining > 0 ? `${remaining} free ${remaining === 1 ? 'quote' : 'quotes'} left` : 'See Pro'} icon={remaining > 0 ? undefined : 'star'} onPress={() => router.push('/paywall')} testID="home-free-badge" />
+    <Chip small label={`${remaining} free ${remaining === 1 ? 'quote' : 'quotes'} left`} icon={remaining > 0 ? undefined : 'star'} onPress={() => router.push({ pathname: '/paywall', params: { from: 'home' } })} testID="home-free-badge" />
   );
 
   if (!store.ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
 
   return (
-    <Screen title="New quote" subtitle="Tap what you're cleaning. The math is on us." large back={false} tab right={badge}>
+    <Screen title="New quote" subtitle="For pressure washing businesses." large back={false} tab right={badge}>
       {store.issues.length ? (
         <Banner tone="warn" title="Something needs attention" body={store.issues.join(' ')} action={<Button size="sm" variant="outline" title="Dismiss" onPress={store.dismissIssues} />} />
       ) : null}
@@ -90,21 +165,69 @@ export default function HomeScreen() {
             }}
             style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, opacity: pressed ? 0.7 : 1 })}
           >
-            <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: c.heroGlass, alignItems: 'center', justifyContent: 'center' }}>
               <Feather name="message-square" size={18} color={c.accent} />
             </View>
             <View style={{ flex: 1 }}>
               <T v="bodyStrong" color={c.heroForeground}>
-                Paste a customer's message
+                {clipHasText ? 'Copied a customer\u2019s message?' : 'Paste a customer\u2019s message'}
               </T>
               <T v="small" color={c.heroMuted}>
-                Services, sizes and contact details are pulled out for you
+                {clipHasText ? 'Paste it and the quote is built from it' : 'Services, sizes and contact details are pulled out for you'}
               </T>
             </View>
             <Feather name="chevron-right" size={18} color={c.heroMuted} />
           </Pressable>
+          {clipHasText ? (
+            NATIVE_PASTE ? (
+              <Clipboard.ClipboardPasteButton
+                acceptedContentTypes={['plain-text']}
+                onPress={(d) => {
+                  if (d.type === 'text') fromPaste(d.text);
+                }}
+                backgroundColor={c.accent}
+                foregroundColor={c.accentForeground}
+                cornerStyle="large"
+                displayMode="iconAndLabel"
+                style={{ width: '100%', height: 48 }}
+                testID="home-paste"
+              />
+            ) : (
+              <Button variant="secondary" icon="clipboard" title="Paste message" onPress={pasteFallback} testID="home-paste" />
+            )
+          ) : null}
         </HeroCard>
       </Animated.View>
+
+      {showEnded ? (
+        <NoticeCard
+          icon="info"
+          title="Pro ended"
+          body={`Your ${realJobs} ${realJobs === 1 ? 'job' : 'jobs'} and your rates are all still here.`}
+          onOpen={() => router.push({ pathname: '/paywall', params: { from: 'home' } })}
+          onDismiss={() => store.updateMeta((m) => ({ ...m, endedCardDismissedAt: Date.now() }))}
+          testID="home-ended"
+        />
+      ) : null}
+
+      {showBackup ? (
+        <NoticeCard
+          icon="download"
+          title={`Back up your ${created} quotes`}
+          body={store.meta.lastBackupAt ? 'Save a fresh copy to Files or iCloud Drive' : 'They live only on this iPhone. Save a copy to Files.'}
+          onOpen={() => router.push('/settings/backup')}
+          onDismiss={() => store.updateMeta((m) => markBackup(m, created, Date.now(), false))}
+          testID="home-backup"
+        />
+      ) : null}
+
+      {!sub.isPro && sub.status !== 'checking' && store.freeUsed >= 1 && remaining > 0 && !store.meta.offerCardDismissed ? (
+        <OfferCard
+          remaining={remaining}
+          onOpen={() => router.push({ pathname: '/paywall', params: { from: 'home' } })}
+          onDismiss={() => store.updateMeta((m) => ({ ...m, offerCardDismissed: true }))}
+        />
+      ) : null}
 
       {!ratesSet ? (
         <Card onPress={() => router.push('/settings/rates')} testID="home-set-rates" tone="alt">
@@ -136,7 +259,7 @@ export default function HomeScreen() {
         <>
           <SectionLabel right={<IconButton icon="arrow-right" label="See all jobs" size={30} onPress={() => router.push('/jobs')} />}>Recent quotes</SectionLabel>
           {recent.map((j) => (
-            <JobRow key={j.id} job={j} onPress={() => router.push({ pathname: '/job/[id]', params: { id: j.id } })} />
+            <JobRow key={j.id} job={j} onPress={() => router.push({ pathname: '/job/[id]', params: { id: j.id } })} onSimilar={() => similar(j.id)} />
           ))}
         </>
       ) : null}

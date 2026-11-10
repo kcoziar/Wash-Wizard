@@ -1,274 +1,100 @@
 import React, { useState } from 'react';
-import {
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useColors } from '@/hooks/useColors';
 import { Feather } from '@expo/vector-icons';
 import { reloadAppAsync } from 'expo';
+import { useColors } from '@/hooks/useColors';
+import { SUPPORT_EMAIL } from '@/constants/legal';
+import { emailSupport } from '@/lib/support';
 
 export type ErrorFallbackProps = {
   error: Error;
   resetError: () => void;
 };
 
+/**
+ * Shown when a screen fails to draw. Jobs are saved as the operator works, so the message leads
+ * with that. Built from plain components so it cannot fail the same way the screen did.
+ */
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
-  const colors = useColors();
+  const c = useColors();
   const insets = useSafeAreaInsets();
+  const [tries, setTries] = useState(0);
+  const [mailFailed, setMailFailed] = useState(false);
 
-  const [isModalVisible, setIsModalVisible] = useState(false);
-
-  const handleRestart = async () => {
+  const tryAgain = async () => {
+    // First try redraws the screen; if it fails again, restart the app.
+    if (tries === 0) {
+      setTries(1);
+      resetError();
+      return;
+    }
     try {
       await reloadAppAsync();
-    } catch (restartError) {
-      console.error('Failed to restart app:', restartError);
+    } catch {
       resetError();
     }
   };
 
-  const formatErrorDetails = (): string => {
-    let details = `Error: ${error.message}\n\n`;
-    if (error.stack) {
-      details += `Stack Trace:\n${error.stack}`;
-    }
-    return details;
+  const support = async () => {
+    setMailFailed(false);
+    const detail = `${error.name}: ${String(error.message ?? '').slice(0, 300)}`;
+    const ok = await emailSupport({ subject: 'The app hit a problem', lines: [`Error: ${detail}`] });
+    if (!ok) setMailFailed(true);
   };
 
-  const monoFont = Platform.select({
-    ios: 'Menlo',
-    android: 'monospace',
-    default: 'monospace',
-  });
-
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {__DEV__ ? (
+    <View style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={[styles.icon, { backgroundColor: c.confirmSoft }]}>
+          <Feather name="shield" size={26} color={c.confirm} />
+        </View>
+        <Text accessibilityRole="header" style={[styles.title, { color: c.foreground }]}>
+          Your data is safe
+        </Text>
+        <Text style={[styles.message, { color: c.mutedForeground }]}>
+          This screen hit a problem and stopped. Your jobs, quotes and settings are saved on this iPhone and were not changed.
+        </Text>
+
         <Pressable
-          onPress={() => setIsModalVisible(true)}
-          accessibilityLabel="View error details"
+          testID="error-try-again"
           accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.topButton,
-            {
-              top: insets.top + 16,
-              backgroundColor: colors.card,
-              opacity: pressed ? 0.8 : 1,
-            },
-          ]}
+          onPress={tryAgain}
+          style={({ pressed }) => [styles.button, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
         >
-          <Feather name="alert-circle" size={20} color={colors.foreground} />
+          <Text style={[styles.buttonText, { color: c.primaryForeground }]}>{tries === 0 ? 'Try again' : 'Restart the app'}</Text>
         </Pressable>
-      ) : null}
-
-      <View style={styles.content}>
-        <Text style={[styles.title, { color: colors.foreground }]}>
-          Something went wrong
-        </Text>
-
-        <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
-        </Text>
-
         <Pressable
-          onPress={handleRestart}
-          style={({ pressed }) => [
-            styles.button,
-            {
-              backgroundColor: colors.primary,
-              opacity: pressed ? 0.9 : 1,
-              transform: [{ scale: pressed ? 0.98 : 1 }],
-            },
-          ]}
+          testID="error-support"
+          accessibilityRole="button"
+          onPress={support}
+          style={({ pressed }) => [styles.button, { backgroundColor: c.secondary, opacity: pressed ? 0.85 : 1 }]}
         >
-          <Text
-            style={[styles.buttonText, { color: colors.primaryForeground }]}
-          >
-            Try Again
-          </Text>
+          <Text style={[styles.buttonText, { color: c.secondaryForeground }]}>Tell support what happened</Text>
         </Pressable>
-      </View>
+        {mailFailed ? (
+          <Text selectable style={[styles.message, { color: c.mutedForeground }]}>
+            Mail isn't set up on this device. Write to {SUPPORT_EMAIL} from any email app.
+          </Text>
+        ) : null}
 
-      {__DEV__ ? (
-        <Modal
-          visible={isModalVisible}
-          animationType="slide"
-          transparent={true}
-          onRequestClose={() => setIsModalVisible(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <View
-              style={[
-                styles.modalContainer,
-                { backgroundColor: colors.background },
-              ]}
-            >
-              <View
-                style={[
-                  styles.modalHeader,
-                  { borderBottomColor: colors.border },
-                ]}
-              >
-                <Text style={[styles.modalTitle, { color: colors.foreground }]}>
-                  Error Details
-                </Text>
-                <Pressable
-                  onPress={() => setIsModalVisible(false)}
-                  accessibilityLabel="Close error details"
-                  accessibilityRole="button"
-                  style={({ pressed }) => [
-                    styles.closeButton,
-                    { opacity: pressed ? 0.6 : 1 },
-                  ]}
-                >
-                  <Feather name="x" size={24} color={colors.foreground} />
-                </Pressable>
-              </View>
-
-              <ScrollView
-                style={styles.modalScrollView}
-                contentContainerStyle={[
-                  styles.modalScrollContent,
-                  { paddingBottom: insets.bottom + 16 },
-                ]}
-                showsVerticalScrollIndicator
-              >
-                <View
-                  style={[
-                    styles.errorContainer,
-                    { backgroundColor: colors.card },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.errorText,
-                      {
-                        color: colors.foreground,
-                        fontFamily: monoFont,
-                      },
-                    ]}
-                    selectable
-                  >
-                    {formatErrorDetails()}
-                  </Text>
-                </View>
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-      ) : null}
+        {__DEV__ ? (
+          <Text selectable style={[styles.dev, { color: c.mutedForeground, backgroundColor: c.card, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) }]}>
+            {`${error.message}\n\n${error.stack ?? ''}`.slice(0, 2000)}
+          </Text>
+        ) : null}
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  content: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-    width: '100%',
-    maxWidth: 600,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    textAlign: 'center',
-    lineHeight: 40,
-  },
-  message: {
-    fontSize: 16,
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  topButton: {
-    position: 'absolute',
-    right: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 10,
-  },
-  button: {
-    paddingVertical: 16,
-    borderRadius: 8,
-    paddingHorizontal: 24,
-    minWidth: 200,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  buttonText: {
-    fontWeight: '600',
-    textAlign: 'center',
-    fontSize: 16,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContainer: {
-    width: '100%',
-    height: '90%',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-  },
-  closeButton: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalScrollView: {
-    flex: 1,
-  },
-  modalScrollContent: {
-    padding: 16,
-  },
-  errorContainer: {
-    width: '100%',
-    borderRadius: 8,
-    overflow: 'hidden',
-    padding: 16,
-  },
-  errorText: {
-    fontSize: 12,
-    lineHeight: 18,
-    width: '100%',
-  },
+  container: { flex: 1, width: '100%', paddingHorizontal: 24 },
+  content: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', gap: 14, maxWidth: 520, width: '100%', alignSelf: 'center' },
+  icon: { width: 56, height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
+  title: { fontSize: 26, fontWeight: '700', textAlign: 'center', lineHeight: 32 },
+  message: { fontSize: 16, textAlign: 'center', lineHeight: 23 },
+  button: { minHeight: 52, borderRadius: 14, paddingHorizontal: 24, paddingVertical: 12, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
+  buttonText: { fontSize: 16, fontWeight: '600', textAlign: 'center' },
+  dev: { fontSize: 11, lineHeight: 15, padding: 12, borderRadius: 10, alignSelf: 'stretch', marginTop: 12 },
 });

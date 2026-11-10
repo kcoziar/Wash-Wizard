@@ -55,27 +55,44 @@ export default function RatesScreen() {
             <Segmented
               compact
               options={[
-                { value: 'area', label: 'By area' },
-                { value: 'linear', label: 'By length' },
-                { value: 'each', label: 'By count' },
+                { value: 'area', label: 'Area' },
+                { value: 'linear', label: 'Length' },
+                { value: 'each', label: 'Count' },
+                { value: 'flat', label: 'Flat price' },
               ]}
-              value={r.qtyType as 'area' | 'linear' | 'each'}
+              value={r.qtyType as 'area' | 'linear' | 'each' | 'flat'}
               onChange={(v: QuantityType) => setRate(k, { qtyType: v, unit: unitFor(v, s.units), rate: '', production: '', eachLabel: v === 'each' ? r.eachLabel || SERVICE_META[k].eachLabel || 'items' : r.eachLabel })}
               testID={`rate-${k}-type`}
             />
             {r.qtyType === 'each' ? <Field label="Counting" value={r.eachLabel} onChangeText={(t) => setRate(k, { eachLabel: t })} placeholder="steps" maxLength={30} /> : null}
-            <Field label={`Rate ${perUnitLabel(r.unit, r.eachLabel)}`} value={r.rate} onChangeText={(t) => setRate(k, { rate: t })} prefix="$" decimal maxDecimals={4} placeholder="Not set" testID={`rate-${k}-value`} />
-            <Field
-              label="You clean about this much per hour (optional)"
-              value={r.production}
-              onChangeText={(t) => setRate(k, { production: t })}
-              suffix={`${unitLabel(r.unit, r.eachLabel)}/h`}
-              decimal
-              maxDecimals={0}
-              placeholder="Not set"
-              hint="Used to estimate cleaning time for the worth-it check."
-              testID={`rate-${k}-production`}
-            />
+            {r.qtyType === 'flat' ? (
+              <Field
+                label="Your usual price"
+                value={r.rate}
+                onChangeText={(t) => setRate(k, { rate: t })}
+                prefix="$"
+                decimal
+                maxDecimals={2}
+                placeholder="Not set"
+                hint="New quotes start at this price. Change it on any quote."
+                testID={`rate-${k}-value`}
+              />
+            ) : (
+              <>
+                <Field label={`Rate ${perUnitLabel(r.unit, r.eachLabel)}`} value={r.rate} onChangeText={(t) => setRate(k, { rate: t })} prefix="$" decimal maxDecimals={4} placeholder="Not set" testID={`rate-${k}-value`} />
+                <Field
+                  label="You clean about this much per hour (optional)"
+                  value={r.production}
+                  onChangeText={(t) => setRate(k, { production: t })}
+                  suffix={`${unitLabel(r.unit, r.eachLabel)}/h`}
+                  decimal
+                  maxDecimals={0}
+                  placeholder="Not set"
+                  hint="Used to estimate cleaning time for the worth-it check."
+                  testID={`rate-${k}-production`}
+                />
+              </>
+            )}
             <ToggleRow title="Taxable" value={r.taxable} onChange={(v) => setRate(k, { taxable: v })} />
           </Card>
         );

@@ -1,4 +1,5 @@
 import { centsToInput, date, money } from './format';
+import { isSafeLogo } from './logo';
 import type { Calc } from './pricing';
 import type { Draft, QuoteDoc, Settings } from './types';
 
@@ -28,7 +29,7 @@ export function buildQuoteDoc(args: {
       name: business.name.trim(),
       phone: business.phone.trim(),
       email: business.email.trim(),
-      logo: business.logo && /^data:image\/(png|jpeg|jpg);base64,[A-Za-z0-9+/=]+$/.test(business.logo) ? business.logo : null,
+      logo: isSafeLogo(business.logo) ? business.logo : null,
     },
     customer: { name: draft.customer.name.trim(), address: draft.customer.address.trim() },
     lines: calc.lines.map((l) => ({
@@ -65,6 +66,23 @@ export function quoteFileName(doc: QuoteDoc): string {
   return `Quote ${ref}${doc.sample ? ' SAMPLE' : ''}.pdf`;
 }
 
+function listJoin(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** The short text that goes with a quote sent from Messages. Uses only the customer document. */
+export function quoteSmsMessage(doc: QuoteDoc): string {
+  const first = doc.customer.name.trim().split(/\s+/)[0] ?? '';
+  const names = Array.from(new Set(doc.lines.map((l) => l.name.trim().toLowerCase()).filter(Boolean)));
+  const services = names.length > 4 ? `${names.slice(0, 3).join(', ')} and more` : listJoin(names);
+  const greeting = first ? `Hi ${first}, here's` : "Hi, here's";
+  const scope = services ? ` for ${services}` : '';
+  const sign = doc.business.name.trim() ? ` - ${doc.business.name.trim()}` : '';
+  return `${greeting} your quote${scope}: ${money(doc.total)}. Reply YES to book.${sign}`;
+}
+
 export function renderQuoteHtml(doc: QuoteDoc): string {
   const b = doc.business;
   const rows = doc.lines
@@ -87,10 +105,12 @@ export function renderQuoteHtml(doc: QuoteDoc): string {
     totals.push(`<div class="row"><span>Balance on completion</span><span>${escapeHtml(money(doc.deposit.balance))}</span></div>`);
   }
   const contact = [b.phone, b.email].filter(Boolean).map(escapeHtml).join(' &nbsp;&middot;&nbsp; ');
-  const logo = b.logo ? `<img class="logo" src="${b.logo}" />` : '';
+  // Checked again here: a stored or imported document is never trusted to carry markup.
+  const logo = isSafeLogo(b.logo) ? `<img class="logo" src="${b.logo}" alt="" />` : '';
   return `<!doctype html><html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <style>
-  @page { margin: 40px 44px; }
+  @page { margin: 0; }
+  html, body { background: #FFFFFF; }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #16181B; font-size: 12px; line-height: 1.45; margin: 0; }
   .top { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 18px; border-bottom: 3px solid #16181B; }

@@ -3,16 +3,18 @@ import { Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { LineCard, QuestionCard, StatusChip } from '@/components/job';
-import { Banner, Button, Card, Chip, EmptyState, Field, HeroCard, IconButton, PassMoney, Screen, SectionLabel, Sheet, T, haptic } from '@/components/ui';
+import { Banner, Button, Card, Chip, EmptyState, Field, HeroCard, IconButton, PassMoney, Screen, SectionLabel, Sheet, T, TextLink, haptic } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { SERVICE_META, newLine } from '@/lib/defaults';
 import { duration, money, percent } from '@/lib/format';
-import { confirmQuantities, resolveQuestion, unconfirmed, type Resolution } from '@/lib/resolve';
+import { recapNumbers } from '@/lib/recap';
+import { confirmQuantities, linesFromLastQuote, pastCustomers, reconcileQuestions, resolveQuestion, unconfirmed, type PastCustomer, type Resolution } from '@/lib/resolve';
 import { useJob, useStore, withDraft } from '@/lib/store';
 import { latestRevision, useJobCalc } from '@/lib/useQuote';
 import type { Line, RatedKind, ServiceKind } from '@/lib/types';
 
 const ADD: ServiceKind[] = ['driveway', 'walkway', 'patio', 'stairs', 'custom'];
+const TIME_CHIPS = [45, 60, 90, 120, 180, 240];
 const ADD_ICON: Record<ServiceKind, React.ComponentProps<typeof Chip>['mci']> = {
   driveway: 'road-variant',
   walkway: 'walk',
@@ -30,6 +32,7 @@ export default function JobScreen() {
   const [menu, setMenu] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [moreContact, setMoreContact] = useState(false);
+  const [picked, setPicked] = useState<PastCustomer | null>(null);
   const [showRequest, setShowRequest] = useState(false);
 
   if (!store.ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
@@ -46,14 +49,26 @@ export default function JobScreen() {
   const d = job.draft;
   const pending = unconfirmed(d);
   const openQuestions = d.questions.filter((q) => !q.resolved);
+  // Name and address read from a customer's message stay marked until the operator checks them.
+  const contactFromMessage = d.customer.source === 'customer' && !!(d.customer.name.trim() || d.customer.address.trim());
   const customerChanged = !!latest && (d.customer.name.trim() !== latest.doc.customer.name || d.customer.address.trim() !== latest.doc.customer.address);
 
   const setLine = (next: Line) => store.updateDraft(job.id, (dr) => ({ ...dr, lines: dr.lines.map((l) => (l.id === next.id ? next : l)) }));
   const saveRate = (line: Line) => {
     const kind = line.kind as RatedKind;
-    store.updateSettings((s) => ({ ...s, rates: { ...s.rates, [kind]: { ...s.rates[kind], rate: line.rate, unit: line.unit, qtyType: line.qtyType } } }));
+    const flat = line.qtyType === 'flat';
+    store.updateSettings((s) => {
+      const was = s.rates[kind];
+      // Cleaning speed only carries over while the service is still measured the same way.
+      const production = was.qtyType === line.qtyType && was.unit === line.unit ? was.production : '';
+      return { ...s, rates: { ...s.rates, [kind]: { ...was, rate: flat ? line.price : line.rate, unit: line.unit, qtyType: line.qtyType, eachLabel: line.eachLabel || was.eachLabel, production } } };
+    });
     setLine({ ...line, rateSource: 'saved' });
     haptic('success');
+  };
+  const setVisitTotal = (minutes: number) => {
+    store.updateDraft(job.id, (dr) => ({ ...dr, visit: { ...dr.visit, mode: 'total', total: { state: 'known_value', minutes: String(minutes), source: 'operator' } } }));
+    haptic('select');
   };
   const addLine = (kind: ServiceKind) => {
     const line = newLine(kind, store.settings);
@@ -64,11 +79,15 @@ export default function JobScreen() {
     const res = resolveQuestion(job.draft, questionId, r, store.settings);
     if (!res.ok) return res.error;
     store.updateJob(job.id, (j) => ({
-      ...withDraft(j, res.draft),
+      ...withDraft(j, reconcileQuestions(res.draft)),
       privateNotes: res.privateNote ? [j.privateNotes.trim(), res.privateNote].filter(Boolean).join('\n') : j.privateNotes,
     }));
     return null;
   };
+  // Suggest earlier customers only while a new name is being typed, not once the details are filled in.
+  const matches = !d.customer.address.trim() && !d.customer.phone.trim() ? pastCustomers(store.jobs, d.customer.name, job.id).filter((m) => m.name !== d.customer.name.trim() || m.address) : [];
+  const pickedJob = picked ? store.jobs.find((j) => j.id === picked.jobId) : undefined;
+  const canStartFromLast = d.lines.every((l) => !l.qty.trim() && !l.parts.length && !l.price.trim());
   const setCustomer = (patch: Partial<typeof d.customer>) => store.updateDraft(job.id, (dr) => ({ ...dr, customer: { ...dr.customer, ...patch, source: 'operator' } }));
 
   const p = d.pricing;
@@ -81,6 +100,9 @@ export default function JobScreen() {
   ].filter(Boolean) as string[];
 
   const perHour = econ?.availablePerHour ?? econ?.revenuePerHour ?? null;
+  // One tap on a door-to-door time turns the total into an hourly figure. Nothing is preselected.
+  const showTimeChips = calc.complete && econ != null && econ.minutes == null && d.visit.mode === 'total' && d.visit.total.state === 'unknown';
+  const recap = job.outcome && latest ? recapNumbers(latest.economics, job.outcome) : null;
   const soFar = calc.lines.filter((l) => l.kind !== 'minimum' && l.treatment === 'priced' && l.missing.length === 0 && !l.issue).reduce((t, l) => t + l.amount, 0);
   const ctaTitle = !latest ? 'Review & create quote' : dirty ? `Review update ${job.sample ? '' : `R${job.revisions.length + 1}`}`.trim() : `Open quote ${latest.reference}`;
 
@@ -128,7 +150,7 @@ export default function JobScreen() {
           testID="job-earnings"
           accessibilityRole="button"
           onPress={() => router.push({ pathname: '/job/[id]/earnings', params: { id: job.id } })}
-          style={({ pressed }) => ({ marginTop: 4, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: 12, opacity: pressed ? 0.7 : 1 })}
+          style={({ pressed }) => ({ marginTop: 4, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.heroGlassSoft, borderRadius: 12, padding: 12, opacity: pressed ? 0.7 : 1 })}
         >
           <Feather name="eye-off" size={16} color={c.accent} />
           <View style={{ flex: 1 }}>
@@ -147,7 +169,38 @@ export default function JobScreen() {
           </View>
           <Feather name="chevron-right" size={16} color={c.heroMuted} />
         </Pressable>
+        {showTimeChips ? (
+          <View style={{ gap: 8 }} testID="job-time-chips">
+            <T v="small" color={c.heroMuted}>
+              Door to door, about how long?
+            </T>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {TIME_CHIPS.map((m) => (
+                <Chip key={m} small tone="hero" label={duration(m)} onPress={() => setVisitTotal(m)} testID={`job-time-${m}`} />
+              ))}
+            </View>
+          </View>
+        ) : null}
       </HeroCard>
+
+      {recap && job.status === 'completed' ? (
+        <Card onPress={() => router.push({ pathname: '/job/[id]/finish', params: { id: job.id } })} testID="job-recap" tone="confirm">
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Feather name="bar-chart-2" size={18} color={c.confirm} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <T v="bodyStrong">
+                {recap.perHour != null ? `${money(Math.round(recap.perHour), { noCents: true })}/h ${recap.basis === 'after_costs' ? 'after costs' : 'before costs'}` : 'Job recap'}
+              </T>
+              <T v="small" muted>
+                {recap.plannedPerHour != null && recap.perHour != null
+                  ? `Estimated ${money(Math.round(recap.plannedPerHour), { noCents: true })}/h · see estimated vs actual`
+                  : 'See estimated vs actual'}
+              </T>
+            </View>
+            <Feather name="chevron-right" size={18} color={c.faint} />
+          </View>
+        </Card>
+      ) : null}
 
       {dirty ? (
         <Banner
@@ -218,23 +271,80 @@ export default function JobScreen() {
 
       <SectionLabel>Customer</SectionLabel>
       <Card style={{ gap: 12 }}>
-        <Field label="Name" value={d.customer.name} onChangeText={(t) => setCustomer({ name: t })} placeholder="Who is this for?" autoCapitalize="words" testID="customer-name" textContentType="name" />
-        <Field label="Address" value={d.customer.address} onChangeText={(t) => setCustomer({ address: t })} placeholder="Where is the job?" autoCapitalize="words" testID="customer-address" textContentType="fullStreetAddress" />
-        {moreContact || d.customer.phone || d.customer.email ? (
-          <>
-            <Field label="Phone" value={d.customer.phone} onChangeText={(t) => setCustomer({ phone: t })} keyboardType="phone-pad" inputMode="tel" testID="customer-phone" />
-            <Field label="Email" value={d.customer.email} onChangeText={(t) => setCustomer({ email: t })} keyboardType="email-address" inputMode="email" autoCapitalize="none" testID="customer-email" />
+        <Field label="Name" value={d.customer.name} onChangeText={(t) => setCustomer({ name: t })} placeholder="Who is this for?" autoCapitalize="words" testID="customer-name" textContentType="name" tone={contactFromMessage && d.customer.name.trim() ? 'uncertain' : undefined} />
+        {matches.length ? (
+          <View style={{ gap: 6, marginTop: -4 }} testID="customer-suggestions">
             <T v="small" muted>
-              Phone and email stay in the app. The quote shows the name and address.
+              Earlier customer?
             </T>
-          </>
+            {matches.map((m, i) => (
+              <Pressable
+                key={`${m.jobId}-${i}`}
+                accessibilityRole="button"
+                accessibilityLabel={`Use ${m.name}${m.address ? `, ${m.address}` : ''}`}
+                onPress={() => {
+                  haptic('select');
+                  setCustomer({ name: m.name, address: m.address, phone: m.phone, email: m.email });
+                  setPicked(m);
+                }}
+                style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 })}
+                testID={`customer-suggestion-${i}`}
+              >
+                <Feather name="user" size={15} color={c.mutedForeground} />
+                <View style={{ flex: 1 }}>
+                  <T v="bodyStrong" numberOfLines={1}>
+                    {m.name}
+                  </T>
+                  {m.address ? (
+                    <T v="small" muted numberOfLines={1}>
+                      {m.address}
+                    </T>
+                  ) : null}
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        {picked && canStartFromLast && pickedJob ? (
+          <TextLink
+            title={`Start from ${picked.name.split(' ')[0]}'s last quote`}
+            icon="copy"
+            onPress={() => {
+              haptic('success');
+              store.updateDraft(job.id, (dr) => ({ ...dr, lines: linesFromLastQuote(pickedJob) }));
+              setPicked(null);
+            }}
+            testID="customer-start-from-last"
+          />
+        ) : null}
+        <Field label="Address" value={d.customer.address} onChangeText={(t) => setCustomer({ address: t })} placeholder="Where is the job?" autoCapitalize="words" testID="customer-address" textContentType="fullStreetAddress" tone={contactFromMessage && d.customer.address.trim() ? 'uncertain' : undefined} />
+        {contactFromMessage ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }} testID="customer-from-message">
+            <Feather name="message-circle" size={14} color={c.uncertain} />
+            <T v="small" muted style={{ flex: 1 }}>
+              Picked out of the customer's message. Check the spelling before it goes on the quote.
+            </T>
+            <Button size="sm" variant="outline" title="Looks right" onPress={() => store.updateDraft(job.id, (dr) => ({ ...dr, customer: { ...dr.customer, source: 'confirmed' } }))} testID="customer-confirm" />
+          </View>
+        ) : null}
+        <Field
+          label="Mobile number"
+          value={d.customer.phone}
+          onChangeText={(t) => setCustomer({ phone: t })}
+          keyboardType="phone-pad"
+          inputMode="tel"
+          textContentType="telephoneNumber"
+          placeholder="To text them the quote"
+          testID="customer-phone"
+        />
+        {moreContact || d.customer.email ? (
+          <Field label="Email" value={d.customer.email} onChangeText={(t) => setCustomer({ email: t })} keyboardType="email-address" inputMode="email" autoCapitalize="none" textContentType="emailAddress" testID="customer-email" />
         ) : (
-          <Pressable onPress={() => setMoreContact(true)} hitSlop={8} accessibilityRole="button">
-            <T v="smallStrong" muted>
-              + Phone and email
-            </T>
-          </Pressable>
+          <TextLink title="Add email" icon="plus" color={c.mutedForeground} onPress={() => setMoreContact(true)} testID="customer-add-email" />
         )}
+        <T v="small" muted>
+          Phone and email stay in the app. The quote shows the name and address.
+        </T>
         {customerChanged ? (
           <Banner
             tone="warn"
@@ -309,15 +419,29 @@ export default function JobScreen() {
           }}
           testID="menu-duplicate"
         />
-        {latest && (job.status === 'sent' || job.status === 'accepted') ? (
+        {latest && (job.status === 'sent' || job.status === 'accepted' || job.status === 'completed') ? (
           <Button
             variant="secondary"
-            icon="check-square"
-            title="Finish job & recap"
+            icon={job.status === 'completed' ? 'bar-chart-2' : 'check-square'}
+            title={job.status === 'completed' ? (job.outcome ? 'View or edit recap' : 'Add a recap') : 'Finish job & recap'}
             onPress={() => {
               setMenu(false);
               router.push({ pathname: '/job/[id]/finish', params: { id: job.id } });
             }}
+            testID="menu-recap"
+          />
+        ) : null}
+        {!job.sample ? (
+          <Button
+            variant="secondary"
+            icon="layers"
+            title="Quote similar work"
+            onPress={() => {
+              setMenu(false);
+              const copy = store.similarJob(job.id);
+              if (copy) router.push({ pathname: '/job/[id]', params: { id: copy.id } });
+            }}
+            testID="menu-similar"
           />
         ) : null}
         <Button

@@ -1,19 +1,21 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useIsFocused, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { QuoteDocView } from '@/components/QuoteDocView';
-import { STATUS_LABEL } from '@/components/job';
-import { Banner, Button, Card, Chip, EmptyState, Field, IconButton, Screen, SectionLabel, Sheet, T, haptic } from '@/components/ui';
+import { OfferCard, STATUS_LABEL } from '@/components/job';
+import { Banner, Button, Card, Chip, EmptyState, Field, IconButton, Screen, SectionLabel, Sheet, T, TextLink, haptic, type TextInputHandle } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { date, makeId, money, shortDate } from '@/lib/format';
-import { copyText, printDoc, sharePdf, shareText, type ShareResult } from '@/lib/output';
+import { track, trackQuoteCreated } from '@/lib/analytics';
+import { canText, copyText, printDoc, sharePdf, shareText, smsAddress, textQuote, type ShareResult } from '@/lib/output';
+import { takeResume } from '@/lib/resume';
 import { useSubscription } from '@/lib/revenuecat';
 import { useJob, useStore } from '@/lib/store';
 import { draftDoc, latestRevision, revisionReference, useCreateQuote, useJobCalc, useReviewPrompt } from '@/lib/useQuote';
 import type { Issue } from '@/lib/pricing';
-import type { JobStatus, QuoteDoc, Revision, ShareRecord } from '@/lib/types';
+import { FREE_QUOTES, type JobStatus, type QuoteDoc, type Revision, type ShareRecord } from '@/lib/types';
 
 const isWeb = Platform.OS === 'web';
 const STATUS_CHOICES: JobStatus[] = ['quoted', 'sent', 'accepted', 'declined'];
@@ -27,12 +29,49 @@ export default function PreviewScreen() {
   const { calc, issues } = useJobCalc(job, store.settings);
   const { preview, create } = useCreateQuote();
   const askReview = useReviewPrompt();
+  const focused = useIsFocused();
 
   const [busy, setBusy] = useState(false);
   const [askSent, setAskSent] = useState<Revision | null>(null);
   const [pdfFailed, setPdfFailed] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: 'success' | 'warn' | 'danger' | 'info'; text: string } | null>(null);
   const [justCreated, setJustCreated] = useState<string | null>(null);
+  const [newVisit, setNewVisit] = useState(false);
+  const [smsReady, setSmsReady] = useState(false);
+  /** The quote that used the last free quote, so its share flow can end with the one-time notice. */
+  const lastFreeRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    canText().then((ok) => {
+      if (live) setSmsReady(ok);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // The business block is decided once, when the screen opens, and stays until the user leaves.
+  // Typing is held locally and saved on blur and on Create, so the field never vanishes mid-word.
+  const [askBusiness, setAskBusiness] = useState<boolean | null>(null);
+  const [bizName, setBizName] = useState('');
+  const [bizPhone, setBizPhone] = useState('');
+  const nameRef = useRef<TextInputHandle>(null);
+  useEffect(() => {
+    if (askBusiness !== null || !store.ready || !job) return;
+    const missing = !store.settings.business.name.trim() && !job.sample;
+    setAskBusiness(missing);
+    if (missing) setBizPhone(store.settings.business.phone);
+  }, [askBusiness, store.ready, store.settings.business, job]);
+
+  const saveBusiness = () => {
+    if (!askBusiness) return;
+    const name = bizName.trim();
+    const phone = bizPhone.trim();
+    const cur = store.peekSettings().business;
+    if (name === cur.name && phone === cur.phone) return;
+    store.updateSettings((st) => ({ ...st, business: { ...st.business, name: name || st.business.name, phone } }));
+  };
 
   const latest = latestRevision(job);
   const dirty = !!latest && !!job?.dirtySince;
@@ -48,6 +87,125 @@ export default function PreviewScreen() {
     if (viewing) return viewing.doc;
     return draftDoc(job, calc, store.settings);
   }, [job, calc, viewing, store.settings]);
+
+  // The customer's number is private. It is only used to address a text the operator sends.
+  const smsTo = job && !job.sample ? smsAddress(job.draft.customer.phone) : null;
+  const firstName = job?.draft.customer.name.trim().split(/\s+/)[0] ?? '';
+  const canSms = smsReady && !!smsTo;
+  const textLabel = firstName ? `Text to ${firstName}` : 'Text the quote';
+
+  const record = (revisionId: string, channel: ShareRecord['channel'], state: ShareRecord['state']) => {
+    if (!job) return;
+    store.updateJob(job.id, (j) => ({ ...j, shares: [...j.shares, { id: makeId('s'), revisionId, at: Date.now(), channel, state }] }));
+  };
+
+  /** Runs when the share flow for a quote ends, whatever the answer was. */
+  const afterShareFlow = (revision: Revision, sent: boolean) => {
+    if (lastFreeRef.current === revision.id && !store.peekMeta().lastFreeNoticeShown) {
+      lastFreeRef.current = null;
+      store.updateMeta((m) => ({ ...m, lastFreeNoticeShown: true }));
+      setTimeout(() => router.push({ pathname: '/paywall', params: { from: 'last-free', job: revision.id } }), 350);
+      return;
+    }
+    if (sent) askReview().catch(() => undefined);
+  };
+
+  const shareRevisionPdf = async (revision: Revision, pdfUri?: string | null): Promise<ShareResult> => {
+    const res = await sharePdf(revision.doc, pdfUri ?? undefined);
+    record(revision.id, 'pdf', res);
+    if (res === 'failed') setNotice({ tone: 'warn', text: 'The PDF could not be shared from this device. Share the quote as text instead.' });
+    return res;
+  };
+
+  /** Messages opens with the number, the PDF and a short note. Nothing is marked Sent here. */
+  const sendByText = async (revision: Revision, pdfUri?: string | null): Promise<'asked' | 'done'> => {
+    if (!smsTo) return 'done';
+    const r = await textQuote(smsTo, revision.doc, pdfUri ?? null);
+    track('text_send_used');
+    record(revision.id, 'sms', r === 'sent' ? 'sent' : r === 'cancelled' ? 'cancelled' : r === 'failed' ? 'failed' : 'opened');
+    if (r === 'failed') setNotice({ tone: 'warn', text: 'Messages did not open. Share the PDF instead.' });
+    if (r === 'sent' || r === 'unknown') {
+      setAskSent(revision);
+      return 'asked';
+    }
+    return 'done';
+  };
+
+  const runCreate = async (allowTextOnly = false) => {
+    if (busy || !job) return;
+    const jobId = job.id;
+    setBusy(true);
+    setNotice(null);
+    try {
+      saveBusiness();
+      await store.flush();
+      const before = preview(store.peekJob(jobId) ?? job);
+      const res = await create(job, { allowTextOnly });
+      if (res.kind === 'issues') {
+        setNotice({ tone: 'warn', text: 'A few things still need an answer. They are listed above.' });
+        return;
+      }
+      if (res.kind === 'new_visit') {
+        setNewVisit(true);
+        return;
+      }
+      if (res.kind === 'blocked') {
+        const reason = res.decision.kind === 'blocked' ? res.decision.reason : null;
+        if (reason === 'exhausted' || reason === 'unreachable') router.push({ pathname: '/paywall', params: { from: 'limit', job: jobId } });
+        else if (reason === 'pending') setNotice({ tone: 'info', text: 'Your purchase is waiting for approval. Your draft is saved; create the quote as soon as it goes through.' });
+        else setNotice({ tone: 'info', text: 'Still checking your subscription. Try again in a moment. Your draft is saved.' });
+        return;
+      }
+      if (res.kind === 'pdf_failed') {
+        setPdfFailed(res.error);
+        return;
+      }
+      if (res.kind === 'conflict') {
+        setNotice({ tone: 'warn', text: res.message });
+        return;
+      }
+      if (res.kind === 'error') {
+        setNotice({ tone: res.committed === 'no' ? 'danger' : 'warn', text: res.message });
+        return;
+      }
+      haptic('success');
+      setJustCreated(res.revision.id);
+      if (!res.repeated && !job.sample && res.revision.number === 1) {
+        trackQuoteCreated(store.jobs.filter((j) => !j.sample && j.revisions.length > 0 && j.id !== jobId).length + 1);
+      }
+      if (!res.repeated && res.revision.mode === 'free' && before.kind === 'free' && before.remaining <= 1) lastFreeRef.current = res.revision.id;
+      if (isWeb) {
+        // No share sheet in the browser preview; the flow ends here.
+        afterShareFlow(res.revision, false);
+        return;
+      }
+      if (canSms) {
+        if ((await sendByText(res.revision, res.pdfUri)) === 'done') afterShareFlow(res.revision, false);
+        return;
+      }
+      let shared: ShareResult;
+      if (res.pdfUri) {
+        shared = await shareRevisionPdf(res.revision, res.pdfUri);
+      } else {
+        shared = await shareText(res.revision.doc);
+        record(res.revision.id, 'text', shared);
+        if (shared === 'failed') setNotice({ tone: 'warn', text: 'The share sheet did not open. Use Text or Copy below to send the quote.' });
+      }
+      // A share that never opened cannot have gone out, so there is nothing to ask.
+      if (shared !== 'failed') setAskSent(res.revision);
+      else afterShareFlow(res.revision, false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Back from a purchase made at the free-quote limit: create the quote without a second tap.
+  useEffect(() => {
+    if (!focused || !store.ready || !job) return;
+    if (takeResume(job.id)) runCreate(false);
+    // Only when the screen regains focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focused, store.ready, job?.id]);
 
   if (!store.ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
   if (!job || !calc || !doc) {
@@ -68,70 +226,14 @@ export default function PreviewScreen() {
     />
   );
 
-  const record = (revisionId: string, channel: ShareRecord['channel'], state: ShareRecord['state']) =>
-    store.updateJob(job.id, (j) => ({ ...j, shares: [...j.shares, { id: makeId('s'), revisionId, at: Date.now(), channel, state }] }));
-
-  const afterSendQuestion = (revision: Revision) => {
-    if (!store.meta.firstOfferShown && revision.mode === 'free') {
-      store.updateMeta((m) => ({ ...m, firstOfferShown: true }));
-      setTimeout(() => router.push({ pathname: '/paywall', params: { from: 'first' } }), 350);
-      return;
-    }
-    askReview().catch(() => undefined);
-  };
-
-  const shareRevisionPdf = async (revision: Revision, pdfUri?: string | null): Promise<ShareResult> => {
-    const res = await sharePdf(revision.doc, pdfUri ?? undefined);
-    record(revision.id, 'pdf', res);
-    if (res === 'failed') setNotice({ tone: 'warn', text: 'The PDF could not be shared from this device. Share the quote as text instead.' });
-    return res;
-  };
-
-  const runCreate = async (allowTextOnly = false) => {
-    if (busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await store.flush();
-      const res = await create(job, { allowTextOnly });
-      if (res.kind === 'issues') {
-        setNotice({ tone: 'warn', text: 'A few things still need an answer. They are listed above.' });
-        return;
-      }
-      if (res.kind === 'blocked') {
-        if (res.decision.kind === 'blocked' && res.decision.reason === 'exhausted') router.push({ pathname: '/paywall', params: { from: 'limit' } });
-        else if (res.decision.kind === 'blocked' && res.decision.reason === 'pending') setNotice({ tone: 'info', text: 'Your purchase is waiting for approval. Your draft is saved; create the quote as soon as it goes through.' });
-        else setNotice({ tone: 'info', text: 'Still checking your subscription. Try again in a moment. Your draft is saved.' });
-        return;
-      }
-      if (res.kind === 'pdf_failed') {
-        setPdfFailed(res.error);
-        return;
-      }
-      if (res.kind === 'error') {
-        setNotice({ tone: 'danger', text: `The quote was not created: ${res.message} Nothing was used from your free quotes. Try again.` });
-        return;
-      }
-      haptic('success');
-      setJustCreated(res.revision.id);
-      if (isWeb) return;
-      if (res.pdfUri) {
-        await shareRevisionPdf(res.revision, res.pdfUri);
-      } else {
-        const r = await shareText(res.revision.doc);
-        record(res.revision.id, 'text', r);
-      }
-      setAskSent(res.revision);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const setStatus = (status: JobStatus) => {
     store.updateJob(job.id, (j) => ({ ...j, status }));
     if (viewing && status === 'sent') record(viewing.id, 'pdf', 'marked_sent');
     if (status === 'accepted') store.noteMeaningful();
   };
+
+  const remaining = Math.max(0, FREE_QUOTES - store.freeUsed);
+  const showOfferCard = !sub.isPro && sub.status !== 'checking' && store.freeUsed >= 1 && remaining > 0 && !store.meta.offerCardDismissed;
 
   // ---------- Frozen quote view ----------
   if (viewing) {
@@ -149,9 +251,35 @@ export default function PreviewScreen() {
                 <Button title="Print / PDF" icon="printer" flex onPress={() => printDoc(viewing.doc).then((ok) => !ok && setNotice({ tone: 'warn', text: 'Printing is not available here.' }))} testID="preview-print" />
                 <Button title="Copy text" variant="secondary" icon="copy" flex onPress={async () => { const ok = await copyText(viewing.doc); record(viewing.id, 'copy', ok ? 'opened' : 'failed'); setNotice(ok ? { tone: 'success', text: 'Quote copied. Paste it into a text or email.' } : { tone: 'warn', text: 'Copy did not work here.' }); }} testID="preview-copy" />
               </View>
+            ) : canSms ? (
+              <>
+                <Button
+                  title={textLabel}
+                  icon="message-circle"
+                  loading={busy}
+                  onPress={async () => {
+                    if (busy) return;
+                    setBusy(true);
+                    try {
+                      const r = await textQuote(smsTo ?? '', viewing.doc, null);
+                      track('text_send_used');
+                      record(viewing.id, 'sms', r === 'sent' ? 'sent' : r === 'cancelled' ? 'cancelled' : r === 'failed' ? 'failed' : 'opened');
+                      if (r === 'failed') setNotice({ tone: 'warn', text: 'Messages did not open. Share the PDF instead.' });
+                      else if ((r === 'sent' || r === 'unknown') && job.status === 'quoted') setAskSent(viewing);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  testID="preview-sms"
+                />
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <Button title="Share PDF" size="md" variant="secondary" icon="share" flex onPress={async () => { const r = await shareRevisionPdf(viewing); if (r !== 'failed' && job.status === 'quoted') setAskSent(viewing); }} testID="preview-share-pdf" />
+                  <Button title="Copy" size="md" variant="secondary" icon="copy" flex onPress={async () => { const ok = await copyText(viewing.doc); record(viewing.id, 'copy', ok ? 'opened' : 'failed'); setNotice(ok ? { tone: 'success', text: 'Quote copied. Paste it into a text or email.' } : { tone: 'warn', text: 'Copy did not work.' }); }} testID="preview-copy" />
+                </View>
+              </>
             ) : (
               <View style={{ flexDirection: 'row', gap: 10 }}>
-                <Button title="Share PDF" icon="share" flex onPress={async () => { await shareRevisionPdf(viewing); if (job.status === 'quoted') setAskSent(viewing); }} testID="preview-share-pdf" />
+                <Button title="Share PDF" icon="share" flex onPress={async () => { const r = await shareRevisionPdf(viewing); if (r !== 'failed' && job.status === 'quoted') setAskSent(viewing); }} testID="preview-share-pdf" />
                 <Button title="Text" variant="secondary" icon="message-square" onPress={async () => { const r = await shareText(viewing.doc); record(viewing.id, 'text', r); if (r !== 'failed' && job.status === 'quoted') setAskSent(viewing); }} testID="preview-share-text" />
                 <Button title="Copy" variant="secondary" icon="copy" onPress={async () => { const ok = await copyText(viewing.doc); record(viewing.id, 'copy', ok ? 'opened' : 'failed'); setNotice(ok ? { tone: 'success', text: 'Quote copied. Paste it into a text or email.' } : { tone: 'warn', text: 'Copy did not work.' }); }} testID="preview-copy" />
               </View>
@@ -175,6 +303,13 @@ export default function PreviewScreen() {
           </Animated.View>
         ) : null}
         {notice ? <Banner tone={notice.tone} title={notice.text} /> : null}
+        {showOfferCard && isLatest && viewing.mode === 'free' ? (
+          <OfferCard
+            remaining={remaining}
+            onOpen={() => router.push({ pathname: '/paywall', params: { from: 'first', ref: viewing.reference, job: job.id } })}
+            onDismiss={() => store.updateMeta((m) => ({ ...m, offerCardDismissed: true }))}
+          />
+        ) : null}
         {isLatest && dirty && justCreated !== viewing.id ? (
           <Banner
             tone="info"
@@ -198,12 +333,33 @@ export default function PreviewScreen() {
             {job.status === 'sent' || job.status === 'accepted' ? (
               <Button variant="outline" icon="check-square" title="Job done? Add a quick recap" onPress={() => router.push({ pathname: '/job/[id]/finish', params: { id: job.id } })} testID="preview-finish" />
             ) : null}
+            {job.status === 'completed' ? (
+              <Button
+                variant="outline"
+                icon="bar-chart-2"
+                title={job.outcome ? 'Recap: estimated vs actual' : 'Add a quick recap'}
+                onPress={() => router.push({ pathname: '/job/[id]/finish', params: { id: job.id } })}
+                testID="preview-recap"
+              />
+            ) : null}
           </>
         ) : null}
 
         <Animated.View entering={FadeIn.duration(300)}>
           <QuoteDocView doc={viewing.doc} testID="quote-doc" />
         </Animated.View>
+
+        {isLatest && !job.sample ? (
+          <TextLink
+            title="Duplicate for another visit"
+            icon="copy"
+            onPress={() => {
+              const copy = store.duplicateJob(job.id);
+              if (copy) router.push({ pathname: '/job/[id]', params: { id: copy.id } });
+            }}
+            testID="preview-duplicate"
+          />
+        ) : null}
 
         {shares.length ? (
           <>
@@ -215,22 +371,14 @@ export default function PreviewScreen() {
                 .slice(0, 8)
                 .map((s) => (
                   <View key={s.id} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <T v="small">
-                      {s.state === 'marked_sent'
-                        ? 'Marked as sent'
-                        : s.state === 'failed'
-                          ? `${s.channel === 'pdf' ? 'PDF' : s.channel === 'text' ? 'Text' : 'Copy'} did not open`
-                          : s.channel === 'copy'
-                            ? 'Copied as text'
-                            : `Share sheet opened (${s.channel === 'pdf' ? 'PDF' : 'text'})`}
-                    </T>
+                    <T v="small">{shareLabel(s)}</T>
                     <T v="small" muted>
                       {shortDate(s.at)}
                     </T>
                   </View>
                 ))}
               <T v="small" muted style={{ marginTop: 4 }}>
-                Opening the share sheet doesn't confirm the customer got it. Mark it Sent when you know.
+                Opening Messages or the share sheet doesn't confirm the customer got it. Mark it Sent when you know.
               </T>
             </Card>
           </>
@@ -274,7 +422,7 @@ export default function PreviewScreen() {
               store.updateJob(job.id, (j) => ({ ...j, status: j.status === 'quoted' || j.status === 'draft' ? 'sent' : j.status }));
               record(r.id, 'pdf', 'marked_sent');
             }
-            afterSendQuestion(r);
+            afterShareFlow(r, sent);
           }}
         />
       </Screen>
@@ -284,31 +432,56 @@ export default function PreviewScreen() {
   // ---------- Draft preview ----------
   const decision = preview(job);
   const nextRef = revisionReference(job, job.revisions.length + 1);
-  const businessMissing = issues.some((i) => i.key === 'business');
+  // A name typed here counts straight away; it is saved on blur and again on Create.
+  const open = issues.filter((i) => !(i.key === 'business' && bizName.trim()));
+  const onlyBusiness = open.length === 1 && open[0].key === 'business';
   const fixIssue = (i: Issue) => {
-    if (i.lineId) router.push({ pathname: '/job/[id]/line', params: { id: job.id, lineId: i.lineId } });
+    if (i.key === 'business') nameRef.current?.focus();
+    else if (i.lineId) router.push({ pathname: '/job/[id]/line', params: { id: job.id, lineId: i.lineId } });
     else if (['minimum', 'trip', 'discount', 'tax', 'deposit'].some((k) => i.key.startsWith(k))) router.push({ pathname: '/job/[id]/pricing', params: { id: job.id } });
+    else if (from === 'home' || !router.canGoBack()) router.replace({ pathname: '/job/[id]', params: { id: job.id } });
     else router.back();
   };
 
   let access: React.ReactNode = null;
-  let cta: { title: string; onPress: () => void; icon: React.ComponentProps<typeof Feather>['name'] } = { title: latest ? `Create update ${nextRef} & share` : 'Create & share quote', onPress: () => runCreate(false), icon: 'send' };
-  if (issues.length) {
-    cta = { title: `Finish ${issues.length} ${issues.length === 1 ? 'item' : 'items'} first`, onPress: () => fixIssue(issues.find((i) => i.key !== 'business') ?? issues[0]), icon: 'arrow-up' };
+  const sendWord = canSms ? (firstName ? `text to ${firstName}` : 'text') : 'share';
+  let cta: { title: string; onPress: () => void; icon: React.ComponentProps<typeof Feather>['name'] } = {
+    title: latest ? `Create update ${nextRef} & ${sendWord}` : `Create & ${sendWord}${canSms ? '' : ' quote'}`,
+    onPress: () => runCreate(false),
+    icon: canSms ? 'message-circle' : 'send',
+  };
+  if (onlyBusiness) {
+    cta = { title: 'Add your business name to send', onPress: () => fixIssue(open[0]), icon: 'edit-3' };
+  } else if (open.length) {
+    cta = { title: `Finish ${open.length} ${open.length === 1 ? 'item' : 'items'} first`, onPress: () => fixIssue(open.find((i) => i.key !== 'business') ?? open[0]), icon: 'arrow-up' };
   } else if (decision.kind === 'free') {
     access = <Banner tone="info" icon="gift" title="Creating this quote uses 1 of your 3 free quotes. Drafts, corrections and re-sharing are free." body={`${decision.remaining} of 3 left.`} testID="access-free" />;
   } else if (decision.kind === 'pro') {
     access = <Banner tone="success" icon="star" title="Pro: unlimited quotes" testID="access-pro" />;
   } else if (decision.kind === 'revision') {
     access = <Banner tone="info" icon="edit-3" title={`This creates ${nextRef}. Corrections are always free.`} body={`${latest?.reference} stays in the history.`} testID="access-revision" />;
+  } else if (decision.kind === 'new_visit') {
+    access = (
+      <Banner
+        tone="info"
+        icon="copy"
+        title="This is a different customer and address"
+        body={`Corrections to ${latest?.reference ?? 'a quote'} are free. A different visit gets its own quote, and ${latest?.reference ?? 'the original'} stays as it was.`}
+        testID="access-new-visit"
+      />
+    );
+    cta = { title: 'Start a separate quote', onPress: () => setNewVisit(true), icon: 'copy' };
   } else if (decision.kind === 'sample') {
     access = <Banner tone="info" icon="file-text" title="Sample quotes are free and marked SAMPLE." testID="access-sample" />;
   } else if (decision.kind === 'blocked') {
     if (decision.reason === 'exhausted') {
       access = <Banner tone="info" icon="star" title="You've used your 3 free quotes" body="Your draft is saved. Pro creates unlimited quotes. Revisions and re-sharing stay free either way." testID="access-blocked" />;
-      cta = { title: 'Unlock unlimited quotes', onPress: () => router.push({ pathname: '/paywall', params: { from: 'limit' } }), icon: 'star' };
+      cta = { title: 'Unlock unlimited quotes', onPress: () => router.push({ pathname: '/paywall', params: { from: 'limit', job: job.id } }), icon: 'star' };
     } else if (decision.reason === 'pending') {
       access = <Banner tone="warn" title="Your purchase is waiting for approval" body="Nothing more to buy. Your draft is saved; create the quote once it goes through." testID="access-pending" />;
+      cta = { title: 'Check again', onPress: () => sub.refresh(), icon: 'refresh-cw' };
+    } else if (decision.reason === 'unreachable') {
+      access = <Banner tone="warn" icon="wifi-off" title="Your free quotes are used, and the App Store can't be reached" body="If you have Pro, it isn't lost. Your draft is saved; try again when you're online." testID="access-unreachable" />;
       cta = { title: 'Check again', onPress: () => sub.refresh(), icon: 'refresh-cw' };
     } else {
       access = <Banner tone="info" title="Checking your subscription..." testID="access-checking" />;
@@ -323,14 +496,48 @@ export default function PreviewScreen() {
       right={editButton}
       footer={<Button title={cta.title} icon={cta.icon} onPress={cta.onPress} loading={busy} testID="preview-create" />}
     >
-      {issues.length ? (
+      {latest ? (
+        <Banner
+          tone="info"
+          icon="file-text"
+          title={`Your customer has ${latest.reference}`}
+          body="It stays viewable and shareable while you work on this update."
+          action={<Button size="sm" variant="outline" title={`Open ${latest.reference}`} onPress={() => router.setParams({ rev: latest.id })} testID="preview-open-latest" />}
+        />
+      ) : null}
+
+      {askBusiness ? (
+        <Card tone={bizName.trim() ? undefined : 'uncertain'} style={{ gap: 10 }} testID="preview-business">
+          <T v="bodyStrong">Your business on the quote</T>
+          <T v="small" muted>
+            It goes at the top of every quote. You can change it later in Settings.
+          </T>
+          <Field
+            inputRef={nameRef}
+            value={bizName}
+            onChangeText={setBizName}
+            onBlur={saveBusiness}
+            placeholder="Business name"
+            accessibilityLabel="Business name"
+            autoCapitalize="words"
+            textContentType="organizationName"
+            autoFocus={issues.length === 1}
+            returnKeyType="done"
+            testID="preview-business-name"
+            maxLength={80}
+          />
+          <Field value={bizPhone} onChangeText={setBizPhone} onBlur={saveBusiness} placeholder="Phone (optional)" accessibilityLabel="Business phone" keyboardType="phone-pad" inputMode="tel" textContentType="telephoneNumber" testID="preview-business-phone" maxLength={40} />
+        </Card>
+      ) : null}
+
+      {open.some((i) => i.key !== 'business') ? (
         <Card tone="uncertain" style={{ gap: 4 }} testID="preview-issues">
           <T v="bodyStrong" style={{ marginBottom: 4 }}>
             Before you send
           </T>
-          {issues.map((i) =>
+          {open.map((i) =>
             i.key === 'business' ? null : (
-              <Pressable key={i.key} onPress={() => fixIssue(i)} accessibilityRole="button" style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, opacity: pressed ? 0.6 : 1 })}>
+              <Pressable key={i.key} onPress={() => fixIssue(i)} accessibilityRole="button" accessibilityLabel={i.text} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, opacity: pressed ? 0.6 : 1 })}>
                 <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.uncertain }} />
                 <T v="body" style={{ flex: 1 }}>
                   {i.text}
@@ -339,13 +546,6 @@ export default function PreviewScreen() {
               </Pressable>
             ),
           )}
-          {businessMissing ? (
-            <View style={{ gap: 10, marginTop: 6 }}>
-              <T v="body">Add your business name. It goes at the top of every quote.</T>
-              <Field value={store.settings.business.name} onChangeText={(t) => store.updateSettings((s) => ({ ...s, business: { ...s.business, name: t } }))} placeholder="Business name" autoCapitalize="words" testID="preview-business-name" maxLength={80} />
-              <Field value={store.settings.business.phone} onChangeText={(t) => store.updateSettings((s) => ({ ...s, business: { ...s.business, phone: t } }))} placeholder="Phone (optional)" keyboardType="phone-pad" inputMode="tel" testID="preview-business-phone" />
-            </View>
-          ) : null}
         </Card>
       ) : null}
 
@@ -353,6 +553,29 @@ export default function PreviewScreen() {
       {access}
 
       <QuoteDocView doc={doc} testID="quote-doc" />
+
+      <Sheet
+        visible={newVisit}
+        onClose={() => setNewVisit(false)}
+        title="Start a separate quote?"
+        body={`${job.draft.customer.name.trim() || 'This customer'} gets a new quote of their own with everything you entered. ${latest?.reference ?? 'The original quote'} goes back to what was sent.`}
+        testID="new-visit-sheet"
+        actions={
+          <>
+            <Button
+              title="Start a separate quote"
+              icon="copy"
+              onPress={() => {
+                setNewVisit(false);
+                const copy = store.separateVisit(job.id);
+                if (copy) router.replace({ pathname: '/job/[id]/preview', params: { id: copy.id } });
+              }}
+              testID="new-visit-confirm"
+            />
+            <Button variant="ghost" title="Keep editing" onPress={() => setNewVisit(false)} />
+          </>
+        }
+      />
 
       <Sheet
         visible={!!pdfFailed}
@@ -400,4 +623,17 @@ function SentSheet({ revision, onClose }: { revision: Revision | null; onClose: 
       }
     />
   );
+}
+
+function shareLabel(s: ShareRecord): string {
+  if (s.state === 'marked_sent') return 'Marked as sent';
+  if (s.channel === 'sms') {
+    if (s.state === 'sent') return 'Sent from Messages';
+    if (s.state === 'cancelled') return 'Messages closed without sending';
+    if (s.state === 'failed') return 'Messages did not open';
+    return 'Messages opened';
+  }
+  if (s.state === 'failed') return `${s.channel === 'pdf' ? 'PDF' : s.channel === 'text' ? 'Text' : 'Copy'} did not open`;
+  if (s.channel === 'copy') return 'Copied as text';
+  return `Share sheet opened (${s.channel === 'pdf' ? 'PDF' : 'text'})`;
 }
