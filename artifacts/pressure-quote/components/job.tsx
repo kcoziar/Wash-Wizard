@@ -1,0 +1,571 @@
+import React, { useMemo, useState } from 'react';
+import { Pressable, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
+import { Button, Card, Chip, Field, haptic, Segmented, ServiceGlyph, T, TextLink, Tick } from '@/components/ui';
+import { useColors } from '@/hooks/useColors';
+import { parseNonNeg } from '@/lib/decimal';
+import { partQuantity, partsTotal } from '@/lib/geometry';
+import { duration, makeId, money, moneyRate, number, perUnitLabel, shortDate, unitLabel } from '@/lib/format';
+import { computeQuote, type CalcLine } from '@/lib/pricing';
+import type { InputState, Job, JobStatus, Line, Part, Question, RatedKind, Settings, Unit } from '@/lib/types';
+import type { Resolution } from '@/lib/resolve';
+
+// ---------- Status ----------
+
+export const STATUS_LABEL: Record<JobStatus, string> = {
+  draft: 'Draft',
+  quoted: 'Ready to send',
+  sent: 'Sent',
+  accepted: 'Accepted',
+  declined: 'Declined',
+  completed: 'Completed',
+};
+
+export function StatusChip({ status, sample, hero }: { status: JobStatus; sample?: boolean; hero?: boolean }) {
+  const c = useColors();
+  const tone =
+    status === 'accepted' || status === 'completed'
+      ? { bg: hero ? 'rgba(200,242,60,0.16)' : c.confirmSoft, fg: hero ? c.accent : c.confirm }
+      : status === 'declined'
+        ? { bg: hero ? 'rgba(255,107,94,0.16)' : c.destructiveSoft, fg: hero ? c.heroDanger : c.destructive }
+        : status === 'draft'
+          ? { bg: hero ? 'rgba(255,255,255,0.08)' : c.muted, fg: hero ? c.heroMuted : c.mutedForeground }
+          : { bg: hero ? 'rgba(255,255,255,0.12)' : c.secondary, fg: hero ? c.heroForeground : c.foreground };
+  return (
+    <View style={{ flexDirection: 'row', gap: 6 }}>
+      {sample ? (
+        <View style={{ backgroundColor: c.uncertainSoft, borderRadius: 999, paddingHorizontal: 9, height: 24, justifyContent: 'center', borderWidth: 1, borderColor: c.uncertainBorder, borderStyle: 'dashed' }}>
+          <T v="smallStrong" color={c.uncertain} style={{ fontSize: 11.5 }}>
+            Sample
+          </T>
+        </View>
+      ) : null}
+      <View style={{ backgroundColor: tone.bg, borderRadius: 999, paddingHorizontal: 10, height: 24, justifyContent: 'center' }}>
+        <T v="smallStrong" color={tone.fg} style={{ fontSize: 11.5 }}>
+          {STATUS_LABEL[status]}
+        </T>
+      </View>
+    </View>
+  );
+}
+
+/** Total for lists: the latest frozen quote, otherwise the live draft when it is complete. */
+export function jobTotal(job: Job): { cents: number | null; frozen: boolean } {
+  if (job.revisions.length && !job.dirtySince) return { cents: job.revisions[job.revisions.length - 1].doc.total, frozen: true };
+  const calc = computeQuote(job.draft);
+  if (calc.complete) return { cents: calc.total, frozen: false };
+  if (job.revisions.length) return { cents: job.revisions[job.revisions.length - 1].doc.total, frozen: true };
+  return { cents: null, frozen: false };
+}
+
+export function JobRow({ job, onPress }: { job: Job; onPress: () => void }) {
+  const c = useColors();
+  const total = useMemo(() => jobTotal(job), [job]);
+  const kind = job.draft.lines[0]?.kind ?? 'custom';
+  const ref = job.revisions.length ? job.revisions[job.revisions.length - 1].reference : job.sample ? 'SAMPLE' : `Q-${String(job.number).padStart(4, '0')}`;
+  return (
+    <Card onPress={onPress} testID={`job-row-${job.id}`} style={{ padding: 14 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <ServiceGlyph kind={kind} size={40} />
+        <View style={{ flex: 1, gap: 2 }}>
+          <T v="bodyStrong" numberOfLines={1}>
+            {job.draft.customer.name.trim() || job.label}
+          </T>
+          <T v="small" muted numberOfLines={1}>
+            {job.draft.customer.name.trim() ? `${job.label} · ` : ''}
+            {ref} · {shortDate(job.updatedAt)}
+          </T>
+        </View>
+        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          <T v="num" color={total.cents == null ? c.faint : undefined}>
+            {total.cents == null ? '\u2014' : money(total.cents)}
+          </T>
+          <StatusChip status={job.status} sample={job.sample} />
+        </View>
+      </View>
+    </Card>
+  );
+}
+
+// ---------- Line card ----------
+
+function needsText(cl: CalcLine | undefined, line: Line): string | null {
+  if (line.treatment !== 'priced') return null;
+  if (!cl) return 'Needs details';
+  if (cl.missing.includes('qty')) return line.qtyMode === 'parts' ? 'Finish measuring' : 'Needs size';
+  if (cl.missing.includes('rate')) return 'Needs rate';
+  if (cl.missing.includes('price')) return 'Needs price';
+  return null;
+}
+
+export function LineCard({
+  line,
+  calcLine,
+  settings,
+  onChange,
+  onOpen,
+  onSaveRate,
+  testID,
+}: {
+  line: Line;
+  calcLine: CalcLine | undefined;
+  settings: Settings;
+  onChange: (next: Line) => void;
+  onOpen: () => void;
+  onSaveRate: (line: Line) => void;
+  testID?: string;
+}) {
+  const c = useColors();
+  const needs = needsText(calcLine, line);
+  const rated = line.kind !== 'custom' ? settings.rates[line.kind as RatedKind] : null;
+  const ratePrompt = useMemo(() => {
+    if (!rated || line.rateSource !== 'entered' || line.treatment !== 'priced') return null;
+    if (rated.qtyType !== line.qtyType) return null;
+    const r = parseNonNeg(line.rate);
+    if (!r || r.isZero()) return null;
+    if (rated.rate === line.rate && rated.unit === line.unit) return null;
+    return { saved: rated.rate ? `${moneyRate(rated.rate)} ${perUnitLabel(rated.unit, rated.eachLabel)}` : null };
+  }, [rated, line]);
+
+  const customerQty = line.qtySource === 'customer' && line.qtyType !== 'flat' && (line.qty.trim() !== '' || line.parts.length > 0);
+  const muted = line.treatment === 'excluded';
+  const unitText = unitLabel(line.unit, line.eachLabel);
+
+  return (
+    <Card testID={testID} style={{ padding: 14, gap: 12, opacity: muted ? 0.75 : 1 }}>
+      <Pressable onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Edit ${line.name}`} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, opacity: pressed ? 0.6 : 1 })}>
+        <ServiceGlyph kind={line.kind} size={38} />
+        <View style={{ flex: 1 }}>
+          <T v="h3" numberOfLines={1}>
+            {line.name || 'Service'}
+          </T>
+          <T v="small" muted numberOfLines={1}>
+            {line.treatment === 'free'
+              ? 'Included at no charge'
+              : line.treatment === 'excluded'
+                ? 'Listed as not included'
+                : calcLine && calcLine.qtyLabel && line.qtyType !== 'flat' && !calcLine.missing.length
+                  ? `${calcLine.qtyLabel} \u00D7 ${moneyRate(line.rate)}`
+                  : line.detail || (line.qtyType === 'flat' ? 'Flat price' : `Priced ${perUnitLabel(line.unit, line.eachLabel).replace('/ ', 'per ')}`)}
+          </T>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          {line.treatment === 'free' ? (
+            <T v="smallStrong" color={c.confirm}>
+              Included
+            </T>
+          ) : line.treatment === 'excluded' ? (
+            <T v="smallStrong" muted>
+              Not included
+            </T>
+          ) : needs ? (
+            <T v="smallStrong" color={c.uncertain}>
+              {needs}
+            </T>
+          ) : (
+            <T v="num">{money(calcLine?.amount ?? 0)}</T>
+          )}
+        </View>
+        <Feather name="chevron-right" size={18} color={c.faint} />
+      </Pressable>
+
+      {line.treatment === 'priced' ? (
+        line.qtyType === 'flat' ? (
+          <Field
+            testID={testID ? `${testID}-price` : undefined}
+            value={line.price}
+            onChangeText={(t) => onChange({ ...line, price: t })}
+            prefix="$"
+            decimal
+            maxDecimals={2}
+            placeholder="Price"
+            tone={!line.price ? 'uncertain' : undefined}
+          />
+        ) : (
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            {line.qtyMode === 'parts' ? (
+              <Pressable
+                onPress={onOpen}
+                accessibilityRole="button"
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minHeight: 48,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderStyle: customerQty || calcLine?.missing.includes('qty') ? 'dashed' : 'solid',
+                  borderColor: customerQty || calcLine?.missing.includes('qty') ? c.uncertainBorder : c.input,
+                  backgroundColor: customerQty ? c.uncertainSoft : c.card,
+                  paddingHorizontal: 12,
+                  justifyContent: 'center',
+                  opacity: pressed ? 0.7 : 1,
+                })}
+              >
+                <T v="smallStrong" muted style={{ fontSize: 11 }}>
+                  MEASURED
+                </T>
+                <T v="bodyStrong" color={customerQty ? c.uncertain : undefined} numberOfLines={1}>
+                  {calcLine?.qty ? `${number(calcLine.qty)} ${unitText}` : 'Finish shapes'}
+                </T>
+              </Pressable>
+            ) : (
+              <Field
+                style={{ flex: 1 }}
+                testID={testID ? `${testID}-qty` : undefined}
+                value={line.qty}
+                onChangeText={(t) => onChange({ ...line, qty: t, qtySource: 'operator' })}
+                suffix={unitText}
+                decimal
+                placeholder={line.qtyType === 'each' ? 'How many' : 'Size'}
+                tone={customerQty || !line.qty ? 'uncertain' : undefined}
+              />
+            )}
+            <Field
+              style={{ flex: 1 }}
+              testID={testID ? `${testID}-rate` : undefined}
+              value={line.rate}
+              onChangeText={(t) => onChange({ ...line, rate: t, rateSource: 'entered' })}
+              prefix="$"
+              suffix={perUnitLabel(line.unit, line.eachLabel)}
+              decimal
+              maxDecimals={4}
+              placeholder="Rate"
+              tone={!line.rate ? 'uncertain' : line.rateSource === 'saved' ? 'confirm' : undefined}
+            />
+          </View>
+        )
+      ) : null}
+
+      {customerQty && line.treatment === 'priced' ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <Chip small tone="uncertain" icon="message-circle" label="Customer's size" />
+          <TextLink testID={testID ? `${testID}-confirm` : undefined} title="Looks right" icon="check" color={c.confirm} onPress={() => onChange({ ...line, qtySource: 'confirmed' })} />
+          <TextLink title="Measure" icon="maximize" onPress={onOpen} />
+        </View>
+      ) : null}
+
+      {ratePrompt ? (
+        <View style={{ backgroundColor: c.cardAlt, borderRadius: 12, padding: 12, gap: 10, borderWidth: 1, borderColor: c.border }}>
+          <T v="small">
+            {ratePrompt.saved
+              ? `Your saved ${line.kind} rate is ${ratePrompt.saved}. Use ${moneyRate(line.rate)} for:`
+              : `Save ${moneyRate(line.rate)} ${perUnitLabel(line.unit, line.eachLabel)} as your ${line.kind} rate for next time?`}
+          </T>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="sm" variant="outline" title="This job only" flex onPress={() => onChange({ ...line, rateSource: 'built' })} testID={testID ? `${testID}-rate-job` : undefined} />
+            <Button size="sm" variant="primary" title="Save for future" flex onPress={() => onSaveRate(line)} testID={testID ? `${testID}-rate-save` : undefined} />
+          </View>
+        </View>
+      ) : null}
+    </Card>
+  );
+}
+
+// ---------- Questions from a pasted request ----------
+
+export function QuestionCard({
+  question,
+  lines,
+  onResolve,
+  testID,
+}: {
+  question: Question;
+  lines: Line[];
+  onResolve: (r: Resolution) => string | null;
+  testID?: string;
+}) {
+  const c = useColors();
+  const [mode, setMode] = useState<'idle' | 'split' | 'qty'>('idle');
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const group = lines.filter((l) => question.lineIds.includes(l.id));
+  const unit: Unit = question.payload.unit ?? 'sqft';
+
+  const run = (r: Resolution) => {
+    const err = onResolve(r);
+    setError(err);
+    if (!err) haptic('success');
+  };
+
+  let actions: React.ReactNode = null;
+  switch (question.kind) {
+    case 'combined_area':
+      actions =
+        group.length >= 2 ? (
+          <>
+            <Button size="md" variant="primary" title="Price as one area" onPress={() => run({ kind: 'combine' })} testID={`${testID}-combine`} />
+            {group.length === 2 ? <Button size="md" variant="outline" title={`Split between ${group[0].name.toLowerCase()} and ${group[1].name.toLowerCase()}`} onPress={() => setMode('split')} testID={`${testID}-split`} /> : null}
+            <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
+          </>
+        ) : (
+          <>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {(['driveway', 'walkway', 'patio'] as RatedKind[]).map((k) => (
+                <Chip key={k} label={`Use for ${k}`} onPress={() => run({ kind: 'assign', service: k })} testID={`${testID}-assign-${k}`} />
+              ))}
+            </View>
+            <Button size="md" variant="ghost" title="I'll measure on site" onPress={() => run({ kind: 'measure' })} />
+          </>
+        );
+      break;
+    case 'missing_qty':
+      actions = (
+        <>
+          <Button size="md" variant="primary" title="Enter the size" onPress={() => setMode('qty')} testID={`${testID}-qty`} />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="outline" title="Include free" flex onPress={() => run({ kind: 'free' })} />
+            <Button size="md" variant="outline" title="Measure on site" flex onPress={() => run({ kind: 'measure' })} />
+          </View>
+        </>
+      );
+      break;
+    case 'amount_meaning':
+      actions = (
+        <>
+          <Button size="md" variant="primary" title="It's their budget (private)" onPress={() => run({ kind: 'budget' })} testID={`${testID}-budget`} />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="outline" title="Save as a note" flex onPress={() => run({ kind: 'note' })} />
+            <Button size="md" variant="outline" title="Ignore" flex onPress={() => run({ kind: 'ignore' })} />
+          </View>
+        </>
+      );
+      break;
+    case 'other_service':
+    case 'condition':
+      actions = (
+        <>
+          <Button size="md" variant="primary" title={question.kind === 'condition' ? 'Add a priced line for it' : 'Add it to this quote'} onPress={() => run({ kind: 'price' })} testID={`${testID}-price`} />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="outline" title="Not included" flex onPress={() => run({ kind: 'exclude' })} />
+            <Button size="md" variant="outline" title={question.kind === 'condition' ? 'No change' : 'Not needed'} flex onPress={() => run({ kind: 'ignore' })} />
+          </View>
+        </>
+      );
+      break;
+  }
+
+  return (
+    <Card tone="uncertain" testID={testID} style={{ gap: 12 }}>
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Feather name="help-circle" size={18} color={c.uncertain} style={{ marginTop: 2 }} />
+        <View style={{ flex: 1, gap: 6 }}>
+          <T v="bodyStrong">{question.prompt}</T>
+          {question.evidence ? (
+            <View style={{ borderLeftWidth: 2, borderLeftColor: c.uncertainBorder, paddingLeft: 10 }}>
+              <T v="small" muted style={{ fontStyle: 'italic' }}>
+                {'\u201C'}
+                {question.evidence}
+                {'\u201D'}
+              </T>
+            </View>
+          ) : null}
+        </View>
+      </View>
+      {mode === 'split' && group.length === 2 ? (
+        <View style={{ gap: 10 }}>
+          <Field
+            label={`${group[0].name} share of ${question.payload.area} ${unitLabel(unit)}`}
+            value={value}
+            onChangeText={setValue}
+            decimal
+            suffix={unitLabel(unit)}
+            autoFocus
+            error={error}
+            hint={(() => {
+              const total = parseNonNeg(question.payload.area ?? '');
+              const first = parseNonNeg(value);
+              if (!total || !first || first.cmp(total) >= 0) return undefined;
+              return `${group[1].name} gets ${number(total.sub(first))} ${unitLabel(unit)}`;
+            })()}
+          />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="ghost" title="Back" flex onPress={() => setMode('idle')} />
+            <Button size="md" title="Split it" flex onPress={() => run({ kind: 'split', first: value })} testID={`${testID}-split-go`} />
+          </View>
+        </View>
+      ) : mode === 'qty' ? (
+        <View style={{ gap: 10 }}>
+          <Field
+            label={group[0] ? `${group[0].name} size` : 'Size'}
+            value={value}
+            onChangeText={setValue}
+            decimal
+            suffix={group[0] ? unitLabel(group[0].unit, group[0].eachLabel) : undefined}
+            autoFocus
+            error={error}
+          />
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button size="md" variant="ghost" title="Back" flex onPress={() => setMode('idle')} />
+            <Button size="md" title="Use this size" flex onPress={() => run({ kind: 'qty', qty: value })} testID={`${testID}-qty-go`} />
+          </View>
+        </View>
+      ) : (
+        <View style={{ gap: 8 }}>
+          {actions}
+          {error ? (
+            <T v="small" color={c.destructive}>
+              {error}
+            </T>
+          ) : null}
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// ---------- Measurement shapes ----------
+
+export function PartsEditor({ parts, onChange, unit, testID }: { parts: Part[]; onChange: (p: Part[]) => void; unit: Unit; testID?: string }) {
+  const c = useColors();
+  const metric = unit === 'sqm';
+  const len = metric ? 'm' : 'ft';
+  const area = metric ? 'm\u00B2' : 'sq ft';
+  const result = partsTotal(parts);
+  const update = (id: string, patch: Partial<Part>) => onChange(parts.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const add = (subtract: boolean) => onChange([...parts, { id: makeId('p'), shape: 'rect', a: '', b: '', subtract, label: '' }]);
+
+  return (
+    <View style={{ gap: 10 }} testID={testID}>
+      {parts.map((p, i) => {
+        const q = partQuantity(p);
+        return (
+          <View
+            key={p.id}
+            style={{
+              backgroundColor: p.subtract ? c.destructiveSoft : c.cardAlt,
+              borderRadius: 14,
+              padding: 12,
+              gap: 10,
+              borderWidth: 1,
+              borderColor: p.subtract ? 'transparent' : c.border,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: p.subtract ? c.destructive : c.primary, alignItems: 'center', justifyContent: 'center' }}>
+                <Feather name={p.subtract ? 'minus' : 'plus'} size={13} color={p.subtract ? c.destructiveForeground : c.primaryForeground} />
+              </View>
+              <T v="smallStrong" style={{ flex: 1 }}>
+                {p.subtract ? 'Subtract' : `Shape ${parts.filter((x, j) => !x.subtract && j <= i).length}`}
+                {q ? `  ·  ${number(q)} ${area}` : ''}
+              </T>
+              <Pressable accessibilityRole="button" accessibilityLabel="Remove shape" hitSlop={10} onPress={() => onChange(parts.filter((x) => x.id !== p.id))} testID={`${testID}-remove-${i}`}>
+                <Feather name="x" size={18} color={c.mutedForeground} />
+              </Pressable>
+            </View>
+            <Segmented
+              compact
+              options={[
+                { value: 'rect', label: 'Rectangle' },
+                { value: 'triangle', label: 'Triangle' },
+                { value: 'value', label: 'Known area' },
+              ]}
+              value={p.shape}
+              onChange={(v) => update(p.id, { shape: v })}
+            />
+            {p.shape === 'value' ? (
+              <Field value={p.a} onChangeText={(t) => update(p.id, { a: t })} decimal suffix={area} placeholder="Area" testID={`${testID}-a-${i}`} />
+            ) : (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Field style={{ flex: 1 }} value={p.a} onChangeText={(t) => update(p.id, { a: t })} decimal suffix={len} placeholder={p.shape === 'rect' ? 'Length' : 'Base'} testID={`${testID}-a-${i}`} />
+                <T v="h3" muted>
+                  {'\u00D7'}
+                </T>
+                <Field style={{ flex: 1 }} value={p.b} onChangeText={(t) => update(p.id, { b: t })} decimal suffix={len} placeholder={p.shape === 'rect' ? 'Width' : 'Height'} testID={`${testID}-b-${i}`} />
+              </View>
+            )}
+          </View>
+        );
+      })}
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Button size="md" variant="outline" icon="plus" title="Add shape" flex onPress={() => add(false)} testID={`${testID}-add`} />
+        <Button size="md" variant="outline" icon="minus" title="Cut-out" flex onPress={() => add(true)} testID={`${testID}-subtract`} />
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4, paddingTop: 2 }}>
+        <T v="bodyStrong">Total</T>
+        {result.total ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <T v="numLg" testID={`${testID}-total`}>
+              {number(result.total)} {area}
+            </T>
+            <Tick />
+          </View>
+        ) : (
+          <T v="smallStrong" color={c.uncertain}>
+            {result.issue}
+          </T>
+        )}
+      </View>
+      {result.subtracted.sign() > 0 && result.total ? (
+        <T v="small" muted style={{ paddingHorizontal: 4 }}>
+          {number(result.added)} {area} measured, {number(result.subtracted)} {area} taken out.
+        </T>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------- Time & cost rows ----------
+
+export function TimeRow({ label, entry, onChange, placeholder, hint, testID }: { label: string; entry: { state: InputState; minutes: string }; onChange: (state: InputState, minutes: string) => void; placeholder?: string; hint?: string; testID?: string }) {
+  const none = entry.state === 'known_zero' || entry.state === 'not_applicable';
+  return (
+    <View style={{ gap: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <T v="bodyStrong" style={{ flex: 1 }}>
+          {label}
+        </T>
+        <Chip small label="None" selected={none} onPress={() => onChange(none ? 'unknown' : 'known_zero', '')} testID={testID ? `${testID}-none` : undefined} />
+      </View>
+      {!none ? (
+        <Field
+          value={entry.state === 'known_value' ? entry.minutes : ''}
+          onChangeText={(t) => onChange(t ? 'known_value' : 'unknown', t)}
+          decimal
+          maxDecimals={0}
+          suffix="min"
+          placeholder={placeholder ?? 'Not set'}
+          hint={entry.state === 'known_value' && entry.minutes ? duration(Number(entry.minutes)) : hint}
+          testID={testID}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+export function CostRow<E extends { state: InputState; amount: string; basis: 'visit' | 'hour' }>({ label, entry, onChange, testID }: { label: string; entry: E; onChange: (next: E) => void; testID?: string }) {
+  const none = entry.state === 'known_zero' || entry.state === 'not_applicable';
+  return (
+    <View style={{ gap: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <T v="bodyStrong" style={{ flex: 1 }}>
+          {label}
+        </T>
+        <Chip small label="None" selected={none} onPress={() => onChange({ ...entry, state: none ? 'unknown' : 'known_zero', amount: '' })} testID={testID ? `${testID}-none` : undefined} />
+      </View>
+      {!none ? (
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <Field
+            style={{ flex: 1 }}
+            value={entry.state === 'known_value' ? entry.amount : ''}
+            onChangeText={(t) => onChange({ ...entry, state: t ? 'known_value' : 'unknown', amount: t })}
+            prefix="$"
+            decimal
+            maxDecimals={2}
+            placeholder="Not set"
+            testID={testID}
+          />
+          <View style={{ width: 132 }}>
+            <Segmented
+              compact
+              options={[
+                { value: 'visit', label: '/visit' },
+                { value: 'hour', label: '/hour' },
+              ]}
+              value={entry.basis}
+              onChange={(v) => onChange({ ...entry, basis: v })}
+            />
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}

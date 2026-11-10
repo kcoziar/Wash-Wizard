@@ -1,0 +1,1 @@
+- [Browser E2E testing](e2e-browser-testing.md) — headless Chromium + playwright-core in /tmp drives the Expo web preview via data-testid; web skips the share sheet and first-quote paywall.
