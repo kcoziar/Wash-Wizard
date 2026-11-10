@@ -1,0 +1,86 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "3KU-PMYs2S9UXT7Wj-cke"
+uri = "file://generated-artifacts/app-store-screenshots/1-finished-quote.png"
+type = "image"
+title = "1. Finished quote"
+description = "App Store screenshot 1 (6.9\", 1320x2868): the customer's quote."
+logical_id = "39ff28f1-76ee-43fd-bfcf-758865836480"
+content_hash = "sha256:51d4bb9baac89487da93558d5cd797dfe366457a787a2ede78b6eed7d8c5f00b"
+size = 280940
+mtime_ms = 1794334266395
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/39ff28f1-76ee-43fd-bfcf-758865836480/70a36e4a-49d9-4aa1-9aa7-49e74bbb8e37"
+storage_version_token = "1794334390983184"
+content_type = "image/png"
+
+[[outputs]]
+id = "14w-iqIWZIMSe5vBGWiyl"
+uri = "file://generated-artifacts/app-store-screenshots/2-paste-customer-text.png"
+type = "image"
+title = "2. Paste a customer's text"
+description = "Screenshot 2: services, sizes, name and address picked out of a text."
+logical_id = "d7fb0278-f0fe-4e86-9c77-715da9aa530b"
+content_hash = "sha256:633598e8cf891c857956d75b6848e7ac139f0957f5f6ad9a94e3c60cfb7f4f1c"
+size = 201688
+mtime_ms = 1794334254919
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/d7fb0278-f0fe-4e86-9c77-715da9aa530b/5d9cf497-6bb7-4663-b8dd-43f8fbc1de72"
+storage_version_token = "1794334391626634"
+content_type = "image/png"
+
+[[outputs]]
+id = "M6wwOfggynJpJ1lng_e5x"
+uri = "file://generated-artifacts/app-store-screenshots/3-priced-from-message.png"
+type = "image"
+title = "3. Priced from the message"
+description = "Screenshot 3: priced lines with the customer's sizes to confirm."
+logical_id = "4d235298-0093-4bae-aa62-34f68b626c72"
+content_hash = "sha256:c7c5615e429b93339f294c7016c4a4ae8367955a281458a8f43ed0492d38bf92"
+size = 275527
+mtime_ms = 1794334258099
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/4d235298-0093-4bae-aa62-34f68b626c72/5a2a5909-2139-4738-bd43-ff71942b9a02"
+storage_version_token = "1794334392489191"
+content_type = "image/png"
+
+[[outputs]]
+id = "oCTLuH-pH1FIDbbgf7HmB"
+uri = "file://generated-artifacts/app-store-screenshots/4-worth-it-check.png"
+type = "image"
+title = "4. Worth-it check"
+description = "Screenshot 4: private pay-per-hour check."
+logical_id = "7b4a5bfd-5807-49ff-8d89-1c7c1496bf63"
+content_hash = "sha256:23c15996204da3369ee35a7b77ec422b0d3dc51ee08df45eb6f0ba86f2489c87"
+size = 200538
+mtime_ms = 1794334262831
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/7b4a5bfd-5807-49ff-8d89-1c7c1496bf63/d7f07ea8-e0bc-4dc9-b4bd-d0381248ca7a"
+storage_version_token = "1794334392992041"
+content_type = "image/png"
+
+[[outputs]]
+id = "vzrqm1It6sStV-MSm2Wy2"
+uri = "file://generated-artifacts/app-store-screenshots/5-tools.png"
+type = "image"
+title = "5. Free tools"
+description = "Screenshot 5 (optional): area calculator, price check, margin."
+logical_id = "bc9bc2d8-7712-48d7-9251-3f5d6e7d270a"
+content_hash = "sha256:42f793b0e49d34d0a5dc3f610ab8a9b257cea2ad9bbdfd031dd23345a1ae8493"
+size = 153719
+mtime_ms = 1794334276019
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/bc9bc2d8-7712-48d7-9251-3f5d6e7d270a/abd1b40c-3ee0-467d-8837-55c545580f36"
+storage_version_token = "1794334393658394"
+content_type = "image/png"
+
+[[outputs]]
+id = "lIXjsAMszJzliSDDjsA0a"
+uri = "file://generated-artifacts/app-store-screenshots/subscription-review/paywall.png"
+type = "image"
+title = "Subscription review screenshot"
+description = "Upload to both pwc_pro_monthly and pwc_pro_annual in App Store Connect."
+logical_id = "3ff6715c-668d-46fd-a4d0-a6f7e0695751"
+content_hash = "sha256:2061c6004bd0e61c042fc7a82f1bb2d9d5aafd6da883f3b92c21503b12ad77ad"
+size = 280549
+mtime_ms = 1794334284927
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a5b10a45-9ef6-4062-9b9e-ef0c9738ebd6/3ff6715c-668d-46fd-a4d0-a6f7e0695751/c1027b2e-714e-420b-a21e-17c6625c6e01"
+storage_version_token = "1794334394139760"
+content_type = "image/png"

@@ -1,6 +1,6 @@
 # Pressure Washing Calculator+
 
-An iPhone app (Expo), shown as "Wash Quote+" on the home screen, for solo pressure-washing operators: price a whole visit (driveways, walkways, patios, stairs, other flatwork) from a few taps or a pasted customer message, check whether it is worth the time, and send a clean quote.
+An iPhone app (Expo), shown as "PW Calculator" on the home screen, for solo pressure-washing operators: price a whole visit (driveways, walkways, patios, stairs, other flatwork) from a few taps or a pasted customer message, check whether it is worth the time, and send a clean quote.
 
 ## Run & Operate
 
@@ -13,6 +13,8 @@ An iPhone app (Expo), shown as "Wash Quote+" on the home screen, for solo pressu
 - `pnpm --filter @workspace/pressure-quote run check:live` — after publishing, confirms the hosted privacy, terms and support pages match the app text and the telemetry endpoint is live
 - App Store Connect copy (subtitle, keywords, description, review notes, App Privacy answers): `artifacts/pressure-quote/docs/app-store-listing.md`
 - RevenueCat seed script lives in `scripts/src/seedRevenueCat.ts` (entitlement `pro`, offering `default`, packages `$rc_monthly` / `$rc_annual`)
+- `pnpm --filter @workspace/scripts exec tsx src/checkRevenueCat.ts` — read-only check that the live RevenueCat project matches the app (Apple app bundle ID, `appl_` key match, `pro`, current offering, both Apple products); changes nothing
+- App Store screenshots (6.9", 1320x2868) are rendered from the web preview at 440x956 @3x into `generated-artifacts/app-store-screenshots/` (git-ignored). Never use web-only screens (Print / Copy text) in them
 - The API server receives only the app's anonymous telemetry (`POST /api/telemetry/events` and `/crashes`, table `telemetry`); the mockup sandbox is a scaffold leftover. The Expo artifact's production server (`server/serve.js`) serves only the public site: `/`, `/privacy`, `/terms`, `/support` and `/status` (no Expo Go manifests or bundles; the App Store build comes from the Launch flow). `scripts/build.js` is unused.
 - Part C plan (what a $30/month version would need: cloud backup, accept link, invoices, auto follow-ups): `artifacts/pressure-quote/docs/pricing-30-plan.md`
 

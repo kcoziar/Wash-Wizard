@@ -7,12 +7,13 @@ Copy for App Store Connect. Every claim here matches what the app does in this b
 | Field | Value |
 | --- | --- |
 | Name (30 max) | Pressure Washing Calculator+ |
-| Home-screen name (under the icon) | Wash Quote+ (set in app.json; the App Store name above stays the full name) |
+| Home-screen name (under the icon) | PW Calculator (set in app.json; the App Store name above stays the full name) |
 | Subtitle (30 max) | Quotes from customer texts |
 | Bundle ID | com.kozipublishing.pressurequote |
 | Primary category | Business |
 | Secondary category | Productivity |
-| Age rating | 4+ (no objectionable content) |
+| Age rating | 4+ (answer "None" / "No" to every questionnaire item: no user-generated content, no chat, no web browsing, no gambling, no ads) |
+| Export compliance | Answered in the build: no non-exempt encryption (`usesNonExemptEncryption: false`) |
 | Price | Free with in-app purchases |
 | Privacy Policy URL | https://wash-wizard.replit.app/privacy |
 | Terms of Use (EULA) | Apple Standard EULA, plus https://wash-wizard.replit.app/terms in the description |
@@ -75,9 +76,11 @@ Privacy Policy: https://wash-wizard.replit.app/privacy
 | pwc_pro_monthly | Auto-renewable, 1 month | $9.99 | Pro Monthly |
 | pwc_pro_annual | Auto-renewable, 1 year | $59.99 | Pro Annual |
 
-Both in one subscription group. Do not add an introductory offer or free trial: the app's paywall would show one if App Store Connect offered it, and the listing says there is none.
+Both in one subscription group named **Pro**, same level of service. Availability: all countries where the app is sold. Do not add an introductory offer or free trial: the app's paywall would show one if App Store Connect offered it, and the listing says there is none.
 
-Each product needs a review screenshot of the paywall and a short description such as "Unlimited quotes".
+Each product: display name as above, description **Unlimited quotes**, and the review screenshot `generated-artifacts/app-store-screenshots/subscription-review/paywall.png`. Add both subscriptions to the same submission as the first app version.
+
+RevenueCat (verified by `pnpm --filter @workspace/scripts exec tsx src/checkRevenueCat.ts`): entitlement `pro`; current offering `default` with `$rc_monthly` -> `pwc_pro_monthly` and `$rc_annual` -> `pwc_pro_annual` on the Apple app `com.kozipublishing.pressurequote`.
 
 ## App Review notes
 
@@ -89,11 +92,13 @@ To see the main flow quickly:
 2. On Home, tap "Try it with an example message". This opens a complete sample quote built from a made-up customer message. Sample quotes never use a free quote.
 3. Tap "Review & create quote" to see the customer document, then create and share it.
 
-Free use: 3 quotes. The 4th new quote opens the paywall (Pro Monthly $9.99 or Pro Annual $59.99, no trial). Corrections to an existing quote, re-sharing and sample quotes are always free. Restore is on the paywall and in Settings > Help.
+To see your own quote: Home > "Paste message" (or type one, e.g. "Driveway 20x30"), tap "Build the quote", enter a rate, tap "Looks right" on the customer's size, then "Review & create quote".
+
+Free use: 3 new quotes. Creating a 4th new quote opens the paywall (Pro Monthly $9.99/month or Pro Annual $59.99/year, no free trial). Corrections to an existing quote, re-sharing and sample quotes are always free. Restore Purchases is on the paywall and in Settings > Help > Restore purchases. The paywall can also be opened any time from the free-quotes badge on Home.
 
 Settings > Legal opens the Privacy Policy and Terms of Use (which link to Apple's Standard EULA). Settings > Backup & data > Delete all data removes everything stored by the app.
 
-The app reads the clipboard only when the user taps Paste. It does not request photo library, camera, contacts or location permission; the logo uses the system photo picker.
+The app reads clipboard text only when the user taps Paste (Home only checks whether the clipboard has text, without reading it). It does not request photo library, camera, contacts or location permission; the logo uses the system photo picker.
 
 The app sends anonymous event names (for example "quote created") and crash types to our own server, with no identifiers and no customer content. There is no third-party analytics or advertising SDK. Subscriptions are checked through RevenueCat with an anonymous ID.
 ```
@@ -112,8 +117,21 @@ Everything else: **Not collected**. That includes Contact Info, Location, Contac
 
 What "our server" receives, for reference: an event name from a fixed list (setup finished/skipped, quotes 1 to 3 created, Paste used, Text used, paywall viewed and from where, purchase, restore), or for a failure the app area (render, PDF, share, storage, purchase) and the error class name such as "TypeError". Plus the app version and "ios". No message text, stack, device ID, IP address or customer data. Development builds send nothing.
 
+## Screenshots
+
+6.9" iPhone (1320 x 2868), rendered from this build with fictional data, in upload order:
+
+1. `1-finished-quote.png` — the customer's quote
+2. `2-paste-customer-text.png` — a customer's text picked apart
+3. `3-priced-from-message.png` — priced lines, customer sizes to confirm
+4. `4-worth-it-check.png` — private pay-per-hour check
+5. `5-tools.png` — free tools
+
+All in `generated-artifacts/app-store-screenshots/` (not committed; regenerate from the browser flow if lost). App Store Connect scales the 6.9" set to smaller iPhones. iPad is not needed (`supportsTablet: false`).
+
 ## Before submitting
 
 1. Publish the project so the privacy, terms and support pages and the telemetry endpoint are live, then run `pnpm --filter @workspace/pressure-quote run check:live`.
-2. Set the governing-law state in the Terms if your lawyer wants one.
-3. Screenshots: 6.9" and 6.5" iPhone sizes, taken on a device or the simulator.
+2. RevenueCat > the iOS app: upload the Apple In-App Purchase key (.p8, Key ID, Issuer ID). Recommended: App Store Connect API key (App Manager) and App Store Server Notifications V2 URL from RevenueCat into App Store Connect.
+3. App Store Connect: Paid Apps agreement, tax and banking active; subscriptions created as above.
+4. TestFlight: test the build on an iPhone (see the launch checklist in the chat), then submit that same build with both subscriptions.

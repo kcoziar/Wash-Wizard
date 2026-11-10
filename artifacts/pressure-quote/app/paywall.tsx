@@ -87,7 +87,7 @@ export default function PaywallScreen() {
   const monthly = sub.offering?.monthly ?? null;
   const pkg = selected === 'annual' ? annual ?? monthly : monthly ?? annual;
   const period: 'year' | 'month' = pkg && pkg === annual ? 'year' : 'month';
-  const savings = annual && monthly && monthly.product.price > 0 ? Math.round((1 - annual.product.price / (monthly.product.price * 12)) * 100) : null;
+  const savings = annual && monthly && monthly.product.price > 0 ? Math.floor((1 - annual.product.price / (monthly.product.price * 12)) * 100) : null;
   const remaining = Math.max(0, FREE_QUOTES - store.freeUsed);
   const intro = pkg ? sub.introFor(pkg, period) : null;
 

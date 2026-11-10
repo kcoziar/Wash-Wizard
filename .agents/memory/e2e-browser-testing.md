@@ -15,6 +15,7 @@ The Screenshot tool cannot tap, so flows (start quote, capture, create, paywall 
 - RN Web innerText follows textTransform, so uppercase section labels need case-insensitive matching. Data checks are more reliable via `localStorage` keys (`pwc:v1:settings`, `pwc:v1:meta`, `pwc:v1:job:*`).
 - A pasted customer size must be confirmed ("Looks right") before Create works.
 - flow8 (setup tax, blank-job discard, usual 2-car size, tax note, grouped issues), flow9 (create, then name change -> correction = free R2).
+- App Store screenshots: viewport 440x956 with deviceScaleFactor 3 gives the 6.9" size 1320x2868. The created-quote screen shows web-only Print/Copy buttons, so use the Review quote screen for the hero shot.
 - Scratch flows: flow.mjs (quote + free count), flow2 (capture, paywall, tools), flow3 (dark mode), flow4 (setup, rate from time, unit/basis switches, area tool), flow5 (recap, similar work, earlier customers, pasted 24x36), flow6 (example job, house+roof question, live business name), flow7 (setup chips, services picker). /tmp can be wiped; rebuild from these notes.
 
 **Why:** found while verifying the full build; the flows passed this way with zero console errors.

@@ -85,7 +85,7 @@ export default function SettingsScreen() {
       <Card style={{ paddingVertical: 2 }}>
         <Row icon="briefcase" title="Business details" subtitle="Name, phone, email and logo on every quote" value={s.business.name || 'Not set'} onPress={() => router.push('/settings/business')} testID="settings-business" />
         <Divider inset={44} />
-        <Row icon="dollar-sign" title="Rates & quote defaults" subtitle="Rates, minimum, trip, tax, deposit, terms" value={ratesSet ? `${ratesSet} of 4 rates` : 'Not set'} onPress={() => router.push('/settings/rates')} testID="settings-rates" />
+        <Row icon="dollar-sign" title="Rates & quote defaults" subtitle="Rates, minimum, trip, tax, deposit, terms" value={ratesSet ? `${ratesSet} ${ratesSet === 1 ? 'rate' : 'rates'} set` : 'Not set'} onPress={() => router.push('/settings/rates')} testID="settings-rates" />
         <Divider inset={44} />
         <Row icon="clock" title="Time, costs & target pay" subtitle="Used for the private worth-it check" onPress={() => router.push('/settings/costs')} testID="settings-costs" />
       </Card>
