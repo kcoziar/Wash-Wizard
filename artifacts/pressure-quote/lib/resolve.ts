@@ -248,9 +248,18 @@ export function confirmQuantities(draft: Draft, lineIds?: string[]): Draft {
 }
 
 /** Everything that must be settled before the quote can be created. */
+/**
+ * One item per thing to do. An empty line is one item ("Driveway: add a size and your rate"), and a
+ * line already asked about by an open question is not listed again.
+ */
 export function jobIssues(draft: Draft, calc: Calc): Issue[] {
   const out: Issue[] = [];
-  for (const q of draft.questions) if (!q.resolved) out.push({ key: `q:${q.id}`, text: q.prompt });
+  const asked = new Set<string>();
+  for (const q of draft.questions) {
+    if (q.resolved) continue;
+    out.push({ key: `q:${q.id}`, text: q.prompt });
+    if (q.kind === 'missing_qty') for (const id of q.lineIds) asked.add(id);
+  }
   if (draft.customer.source === 'record' && (draft.customer.name.trim() || draft.customer.address.trim())) {
     out.push({ key: 'customer-record', text: 'Confirm the customer for this visit' });
   }
@@ -261,7 +270,33 @@ export function jobIssues(draft: Draft, calc: Calc): Issue[] {
       text: pending.length === 1 ? `Confirm the customer's size for ${pending[0].name.toLowerCase()}` : `Confirm ${pending.length} sizes the customer gave`,
     });
   }
-  return [...out, ...calc.blocking];
+  return [...out, ...groupLineIssues(calc.blocking, draft, asked)];
+}
+
+function groupLineIssues(blocking: Issue[], draft: Draft, asked: Set<string>): Issue[] {
+  const out: Issue[] = [];
+  const byLine = new Map<string, Issue[]>();
+  for (const i of blocking) {
+    if (!i.lineId) {
+      out.push(i);
+      continue;
+    }
+    const list = byLine.get(i.lineId) ?? [];
+    if (!list.length) out.push(i); // keeps the line's place in the order
+    list.push(i);
+    byLine.set(i.lineId, list);
+  }
+  return out.flatMap((i) => {
+    if (!i.lineId) return [i];
+    const list = (byLine.get(i.lineId) ?? []).filter((x) => !(asked.has(i.lineId as string) && x.key.startsWith('qty:')));
+    if (!list.length) return [];
+    if (list.length === 1) return [list[0]];
+    const name = draft.lines.find((l) => l.id === i.lineId)?.name.trim() || 'Service';
+    const qty = list.some((x) => x.key.startsWith('qty:'));
+    const rate = list.some((x) => x.key.startsWith('rate:'));
+    const what = qty && rate ? 'add a size and your rate' : list.map((x) => x.text.replace(/^[^:]*:\s*/, '')).join(' and ');
+    return [{ key: list[0].key, text: `${name}: ${what}`, lineId: i.lineId }];
+  });
 }
 
 /** A safe copy of earlier work for a new visit: same scope and rates, fresh identity, carried-over customer flagged. */

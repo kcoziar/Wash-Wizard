@@ -45,11 +45,15 @@ export function buildQuoteDoc(args: {
     discount: calc.discount.applied > 0 ? { label: calc.discount.label, amount: calc.discount.applied } : null,
     tax: calc.tax.rate && calc.tax.amount > 0 ? { label: `${calc.tax.label} (${taxRate})`, amount: calc.tax.amount } : null,
     total: calc.total,
+    ...(draft.pricing.tax.state === 'unknown' ? { taxNote: TAX_UNKNOWN_NOTE } : {}),
     deposit: calc.deposit && calc.deposit.amount > 0 ? { ...calc.deposit } : null,
     notes: draft.customerNote.trim(),
     terms: draft.terms.trim(),
   };
 }
+
+/** Shown under the total until the operator says whether they charge sales tax. */
+export const TAX_UNKNOWN_NOTE = 'Plus any applicable sales tax';
 
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -61,9 +65,18 @@ export function quoteTitle(doc: QuoteDoc): string {
   return `Quote ${doc.reference}`;
 }
 
+/** "Clean Co Quote Q-0007.pdf": the customer can tell whose quote it is from the file name alone. */
 export function quoteFileName(doc: QuoteDoc): string {
   const ref = doc.reference.replace(/[^A-Za-z0-9-]/g, '');
-  return `Quote ${ref}${doc.sample ? ' SAMPLE' : ''}.pdf`;
+  const biz = doc.business.name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9 &'-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40)
+    .trim();
+  return `${biz ? `${biz} ` : ''}Quote ${ref}${doc.sample ? ' SAMPLE' : ''}.pdf`;
 }
 
 function listJoin(items: string[]): string {
@@ -80,7 +93,10 @@ export function quoteSmsMessage(doc: QuoteDoc): string {
   const greeting = first ? `Hi ${first}, here's` : "Hi, here's";
   const scope = services ? ` for ${services}` : '';
   const sign = doc.business.name.trim() ? ` - ${doc.business.name.trim()}` : '';
-  return `${greeting} your quote${scope}: ${money(doc.total)}. Reply YES to book.${sign}`;
+  // The operator's own note to the customer closes the text; nothing is added when they left it blank.
+  const note = doc.notes.split(/\n+/)[0].trim();
+  const closing = note ? ` ${note.length > 160 ? `${note.slice(0, 157).trimEnd()}...` : note}` : '';
+  return `${greeting} your quote${scope}: ${money(doc.total)}${doc.taxNote ? ` (${doc.taxNote.toLowerCase()})` : ''}.${closing}${sign}`;
 }
 
 export function renderQuoteHtml(doc: QuoteDoc): string {
@@ -100,6 +116,7 @@ export function renderQuoteHtml(doc: QuoteDoc): string {
   if (doc.discount) totals.push(`<div class="row"><span>${escapeHtml(doc.discount.label)}</span><span>${escapeHtml(money(-doc.discount.amount))}</span></div>`);
   if (doc.tax) totals.push(`<div class="row"><span>${escapeHtml(doc.tax.label)}</span><span>${escapeHtml(money(doc.tax.amount))}</span></div>`);
   totals.push(`<div class="row grand"><span>Total</span><span>${escapeHtml(money(doc.total))}</span></div>`);
+  if (doc.taxNote) totals.push(`<div class="row muted small"><span>${escapeHtml(doc.taxNote)}</span><span></span></div>`);
   if (doc.deposit) {
     totals.push(`<div class="row dep"><span>Deposit due to book</span><span>${escapeHtml(money(doc.deposit.amount))}</span></div>`);
     totals.push(`<div class="row"><span>Balance on completion</span><span>${escapeHtml(money(doc.deposit.balance))}</span></div>`);
@@ -142,6 +159,8 @@ export function renderQuoteHtml(doc: QuoteDoc): string {
   .section { margin-top: 26px; }
   .section p { margin: 6px 0 0 0; }
   .foot { margin-top: 30px; padding-top: 12px; border-top: 1px solid #E7E3DB; display: flex; justify-content: space-between; }
+  /* A row, the totals, or a section never splits across two pages. */
+  tr, .totals, .section, .excl, .meta, .foot { break-inside: avoid; page-break-inside: avoid; }
   .sample { position: fixed; top: 38%; left: -10%; right: -10%; text-align: center; font-size: 70px; font-weight: 900; color: rgba(22,24,27,0.07); transform: rotate(-22deg); letter-spacing: 6px; }
 </style></head><body>
 ${doc.sample ? '<div class="sample">SAMPLE QUOTE</div>' : ''}
@@ -180,6 +199,7 @@ export function renderQuoteText(doc: QuoteDoc): string {
   if (doc.discount) out.push(`${doc.discount.label}: ${money(-doc.discount.amount)}`);
   if (doc.tax) out.push(`${doc.tax.label}: ${money(doc.tax.amount)}`);
   out.push(`Total: ${money(doc.total)}`);
+  if (doc.taxNote) out.push(doc.taxNote);
   if (doc.deposit) out.push(`Deposit due to book: ${money(doc.deposit.amount)}`, `Balance on completion: ${money(doc.deposit.balance)}`);
   if (doc.notes) out.push('', doc.notes);
   if (doc.terms) out.push('', `Terms: ${doc.terms}`);

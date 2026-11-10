@@ -12,6 +12,7 @@ import {
   commitFinalization,
   deleteEverything,
   importJobs,
+  removeJob,
   jobKey,
   loadAll,
   salvageLedger,
@@ -408,6 +409,64 @@ async function run() {
     assert.equal(JSON.stringify(loaded), savedJob, 'job changed on load');
     assert.equal(loaded?.revisions[0].doc.total, res.job.revisions[0].doc.total);
     assert.equal(await ledgerCount(kv), 1);
+  });
+
+  await test('A quote finished after the job was deleted does not bring it back or use a free quote', async () => {
+    const kv = fresh();
+    const j = makeJob();
+    await saveJob(j);
+    await removeJob(j.id);
+    const res = await commitFinalization(j, 'late1', freeDecide('late1'));
+    assert.ok(!res.ok, 'the commit must be refused');
+    assert.equal(kv.data.has(jobKey(j.id)), false, 'the job stays deleted');
+    assert.equal(await ledgerCount(kv), 0);
+    // The same after Delete all.
+    const k = makeJob();
+    await saveJob(k);
+    await deleteEverything();
+    const res2 = await commitFinalization(k, 'late2', freeDecide('late2'));
+    assert.ok(!res2.ok);
+    assert.equal((await loadAll()).jobs.length, 0);
+    assert.equal(await ledgerCount(kv), 0);
+  });
+
+  await test('Finishing an older snapshot keeps the newer saved draft, marked as changed', async () => {
+    const kv = fresh();
+    const j = makeJob();
+    await saveJob(j);
+    const snapshot: Job = JSON.parse(JSON.stringify(j));
+    const edited: Job = { ...j, updatedAt: j.updatedAt + 5000, draft: { ...j.draft, customer: { ...j.draft.customer, name: 'Edited Later' } } };
+    await saveJob(edited);
+    // As in the app, the revision is built from the snapshot being quoted.
+    const res = await commitFinalization(snapshot, 'f1', () => ({ revision: makeRevision(snapshot, 'f1', 'free'), freeUse: true }));
+    assert.ok(res.ok, 'commit failed');
+    if (!res.ok) return;
+    assert.equal(res.job.draft.customer.name, 'Edited Later');
+    assert.ok(res.job.dirtySince !== null, 'the newer draft is marked as changed since the quote');
+    assert.equal(res.job.revisions[0].inputs.customer.name, snapshot.draft.customer.name, 'the quote is what was snapshotted');
+    const stored = JSON.parse(kv.data.get(jobKey(j.id)) ?? '{}') as Job;
+    assert.equal(stored.draft.customer.name, 'Edited Later');
+  });
+
+  await test('An import that fails partway reports exactly what was saved', async () => {
+    const kv = fresh();
+    const jobs = Array.from({ length: 30 }, () => makeJob());
+    // The second batch writes its first 3 records, then the disk fills.
+    let calls = 0;
+    kv.failWhen = (op, keys) => {
+      if (op !== 'multiSet') return false;
+      calls++;
+      if (calls === 2) {
+        for (const key of keys.filter((x) => x.startsWith('pwc:v1:job:')).slice(0, 3)) kv.data.set(key, JSON.stringify(jobs.find((j) => jobKey(j.id) === key)));
+        return true;
+      }
+      return false;
+    };
+    const res = await importJobs(jobs);
+    kv.failWhen = null;
+    const onDisk = kv.keysWith('pwc:v1:job:').length;
+    assert.equal(res.saved.length, onDisk, `reported ${res.saved.length} saved, ${onDisk} on disk`);
+    assert.equal(res.notSaved, 30 - onDisk);
   });
 
   if (failures.length) {

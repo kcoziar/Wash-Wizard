@@ -396,6 +396,26 @@ test('New settings and meta fields survive a save and reload', () => {
   const m = { ...defaultMeta(), onboarded: true, backupMarkQuotes: 4, backupMarkAt: 123, offerCardDismissed: true, lastFreeNoticeShown: true, endedCardDismissedAt: 456, captureDraft: 'driveway 20x30' };
   assert.deepEqual(normalizeMeta(JSON.parse(JSON.stringify(m))), m);
 });
+test('Setup asks about sales tax: no, a rate, or unanswered', () => {
+  const no = applyAnswers(settings, { ...answers(), tax: { charge: 'no', rate: '' } }, new Set());
+  assert.equal(no.tax.state, 'known_zero');
+  const yes = applyAnswers(settings, { ...answers(), tax: { charge: 'yes', rate: '8.25' } }, new Set());
+  assert.deepEqual([yes.tax.state, yes.tax.rate], ['known_value', '8.25']);
+  // "Yes" with no rate typed, or no answer at all, leaves it unknown: the quote then says "Plus any applicable sales tax".
+  assert.equal(applyAnswers(settings, { ...answers(), tax: { charge: 'yes', rate: '' } }, new Set()).tax.state, settings.tax.state);
+  assert.equal(applyAnswers(settings, { ...answers(), tax: { charge: '', rate: '' } }, new Set()).tax.state, settings.tax.state);
+  assert.equal(applyAnswers(settings, { ...answers(), tax: { charge: 'no', rate: '' } }, new Set([2])).tax.state, settings.tax.state);
+});
+test('Saved usual sizes survive a reload; anything malformed is dropped', () => {
+  const s = { ...settings, savedSizes: { 'driveway:2car': { qty: '640', unit: 'sqft' as const } } };
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(s))).savedSizes, s.savedSizes);
+  const bad = { ...settings, savedSizes: { 'driveway:2car': { qty: '0', unit: 'sqft' }, 'roof:9car': { qty: '5', unit: 'sqft' }, 'driveway:3car': { qty: '900', unit: 'acres' } } };
+  assert.deepEqual(normalizeSettings(JSON.parse(JSON.stringify(bad))).savedSizes, {});
+  // Settings saved before this existed load with none.
+  const old = JSON.parse(JSON.stringify(settings));
+  delete old.savedSizes;
+  assert.deepEqual(normalizeSettings(old).savedSizes, {});
+});
 test('Installs from before setup existed are not sent through setup', () => {
   const old = { ...defaultMeta() } as Partial<ReturnType<typeof defaultMeta>>;
   delete old.onboarded;

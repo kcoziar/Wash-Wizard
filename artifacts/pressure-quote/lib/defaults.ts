@@ -94,6 +94,7 @@ export function defaultSettings(): Settings {
     },
     customerNote: DEFAULT_CUSTOMER_NOTE,
     customServices: [],
+    savedSizes: {},
     services: [...CORE_KINDS],
   };
 }

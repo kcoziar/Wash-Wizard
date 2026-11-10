@@ -22,7 +22,7 @@ const light = {
   secondaryForeground: '#15171A',
 
   muted: '#ECE9E3',
-  mutedForeground: '#62666C',
+  mutedForeground: '#4D5157',
   faint: '#9A9DA2',
 
   accent: '#C8F23C',
@@ -78,7 +78,7 @@ const dark: typeof light = {
   secondaryForeground: '#F1F0EC',
 
   muted: '#222428',
-  mutedForeground: '#A0A4AA',
+  mutedForeground: '#B6BAC0',
   faint: '#6E7278',
 
   accent: '#C8F23C',

@@ -145,7 +145,12 @@ export default function PaywallScreen() {
       track('restore', fromValue);
       if (resumeJob) finishToDraft();
       else setCelebrate(true);
-    } else if (res.kind === 'nothing') setNotice({ tone: 'info', title: 'No purchase to restore', body: 'Nothing active was found for this Apple ID. If you subscribed with a different Apple ID, sign in with it and try again.' });
+    } else if (res.kind === 'nothing')
+      setNotice({
+        tone: 'info',
+        title: 'No purchase to restore',
+        body: 'Nothing active was found for this Apple ID. If you subscribed with a different Apple ID, sign in with it and try again. If you were charged and Pro is still off, tap Support and we will sort it out.',
+      });
     else if (res.kind === 'error') setNotice({ tone: 'danger', title: 'Restore did not finish', body: res.message });
   };
 
@@ -329,6 +334,20 @@ export default function PaywallScreen() {
 
       {sub.status === 'pending' ? (
         <Banner tone="info" icon="clock" title="A purchase is waiting for approval" body="There is nothing more to buy. Pro switches on once it is approved. Your draft is saved." testID="paywall-pending" />
+      ) : null}
+      {sub.unconfirmedPurchase && !unresolved ? (
+        <Banner
+          tone="warn"
+          title="Your purchase hasn't switched Pro on"
+          body="The App Store hasn't confirmed it. Tap Restore to check again. If you were charged and Pro is still off, contact support."
+          action={
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <Button size="sm" variant="outline" title="Restore" onPress={restore} loading={sub.busy} testID="paywall-unconfirmed-restore" />
+              <Button size="sm" variant="outline" title="Contact support" onPress={openSupport} testID="paywall-unconfirmed-support" />
+            </View>
+          }
+          testID="paywall-unconfirmed"
+        />
       ) : null}
       {sub.status === 'unreachable' ? (
         <Banner tone="warn" icon="wifi-off" title="The App Store can't be reached right now" body="If you already have Pro, it is not lost. Your draft is saved. Try again when you're online, or use Restore." testID="paywall-unreachable" />

@@ -66,7 +66,7 @@ export default function PricingScreen() {
             Services come to {money(calc.linesTotal)}, so the quote adds {money(calc.minimum.adjustment)} to reach your minimum.
           </T>
         ) : null}
-        {p.minimum.state === 'known_value' ? <ToggleRow title="Charge tax on the minimum adjustment" value={p.minimumTaxable} onChange={(v) => setP((x) => ({ ...x, minimumTaxable: v }))} /> : null}
+        {p.minimum.state === 'known_value' ? <ToggleRow title="Charge tax on the amount that brings it up to my minimum" value={p.minimumTaxable} onChange={(v) => setP((x) => ({ ...x, minimumTaxable: v }))} /> : null}
       </Card>
 
       <SectionLabel>Trip charge</SectionLabel>
@@ -113,7 +113,7 @@ export default function PricingScreen() {
               testID="pricing-discount-value"
             />
             <Field label="Shown on the quote as" value={p.discount.label} onChangeText={(t) => setP((x) => ({ ...x, discount: { ...x.discount, label: t } }))} maxLength={40} placeholder="Discount" />
-            {p.minimum.state === 'known_value' ? <ToggleRow title="Discount the minimum adjustment too" value={p.discount.includeMinimum} onChange={(v) => setP((x) => ({ ...x, discount: { ...x.discount, includeMinimum: v } }))} /> : null}
+            {p.minimum.state === 'known_value' ? <ToggleRow title="Discount the amount that brings it up to my minimum" value={p.discount.includeMinimum} onChange={(v) => setP((x) => ({ ...x, discount: { ...x.discount, includeMinimum: v } }))} /> : null}
             {calc.discount.applied > 0 ? (
               <T v="small" muted>
                 Takes {money(calc.discount.applied)} off {money(calc.discount.eligible)} of eligible work.

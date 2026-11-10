@@ -61,11 +61,12 @@ const variants: Record<Variant, TextStyle> = {
   title: { fontFamily: F.display, fontSize: 30, lineHeight: 34, letterSpacing: -0.2 },
   h2: { fontFamily: F.displaySemi, fontSize: 21, lineHeight: 26 },
   h3: { fontFamily: F.semibold, fontSize: 16, lineHeight: 22 },
-  body: { fontFamily: F.body, fontSize: 15, lineHeight: 21 },
-  bodyStrong: { fontFamily: F.semibold, fontSize: 15, lineHeight: 21 },
-  small: { fontFamily: F.body, fontSize: 13, lineHeight: 18 },
-  smallStrong: { fontFamily: F.semibold, fontSize: 13, lineHeight: 18 },
-  label: { fontFamily: F.semibold, fontSize: 11.5, lineHeight: 15, letterSpacing: 0.9, textTransform: 'uppercase' },
+  body: { fontFamily: F.body, fontSize: 16, lineHeight: 22 },
+  bodyStrong: { fontFamily: F.semibold, fontSize: 16, lineHeight: 22 },
+  // Sized for reading outdoors in sun: helper text is never under 15 pt, labels never under 13 pt.
+  small: { fontFamily: F.body, fontSize: 15, lineHeight: 20 },
+  smallStrong: { fontFamily: F.semibold, fontSize: 15, lineHeight: 20 },
+  label: { fontFamily: F.semibold, fontSize: 13, lineHeight: 17, letterSpacing: 0.6, textTransform: 'uppercase' },
   num: { fontFamily: F.displaySemi, fontSize: 18, lineHeight: 22, fontVariant: ['tabular-nums'] },
   numLg: { fontFamily: F.display, fontSize: 26, lineHeight: 30, fontVariant: ['tabular-nums'] },
 };

@@ -86,6 +86,7 @@ export function QuoteDocView({ doc, testID }: { doc: QuoteDoc; testID?: string }
           <Text style={s.grandText}>Total</Text>
           <Text style={s.grandText}>{money(doc.total)}</Text>
         </View>
+        {doc.taxNote ? <Text style={s.taxNote}>{doc.taxNote}</Text> : null}
         {doc.deposit ? (
           <>
             <Row label="Deposit due to book" value={money(doc.deposit.amount)} strong />
@@ -152,6 +153,7 @@ const s = StyleSheet.create({
   excl: { marginTop: 12, padding: 10, backgroundColor: paper.wash, borderRadius: 8 },
   totals: { marginTop: 14, alignSelf: 'flex-end', width: '78%' },
   grand: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 2, borderTopColor: INK, marginTop: 6, paddingTop: 8, paddingBottom: 4 },
+  taxNote: { fontFamily: F.body, fontSize: 13, color: MUTED, paddingBottom: 4 },
   grandText: { fontFamily: F.display, fontSize: 22, color: INK, fontVariant: ['tabular-nums'] },
   section: { marginTop: 16 },
 });

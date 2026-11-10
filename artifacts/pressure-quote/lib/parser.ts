@@ -1,4 +1,5 @@
 import { Dec } from './decimal';
+import { carSizeKey, sizeKeyLabel } from './sizes';
 import { makeId, number } from './format';
 import { newDraft, newLine, SERVICE_META } from './defaults';
 import { convertRate, lineQuantity, M_PER_FT, SQM_PER_SQFT } from './geometry';
@@ -96,6 +97,8 @@ export interface ParsedRequest {
   questions: ParsedQuestion[];
   customer: { name: string; phone: string; email: string; address: string };
   budget: { amount: string; evidence: string } | null;
+  /** Operator notes only: "10% off", "minimum 150", "trip fee 25". */
+  adjust: { discountPercent: string; minimum: string; trip: string };
 }
 
 // ---------- Text preparation ----------
@@ -188,6 +191,32 @@ interface Shift {
 }
 
 /** The text the reader works on (number words as digits, plain quotes), plus a map back to the customer's own words. */
+/**
+ * Spanish basics, read as their English equivalents so every rule below applies unchanged. The
+ * customer's own words are kept for evidence through the same position mapping as number words.
+ */
+const SPANISH: [RegExp, string][] = [
+  [/^pies\s+cuadrados$/i, 'sq ft'],
+  [/^metros\s+cuadrados$/i, 'sq m'],
+  [/^pies$/i, 'feet'],
+  [/^metros$/i, 'meters'],
+  [/^entradas?(?:\s+de\s+(?:carros?|coches?|autos?))?$/i, 'driveway'],
+  [/^(?:banquetas?|aceras?|veredas?)$/i, 'sidewalk'],
+  [/^(?:escalones|escal[oó]n|escaleras?|gradas)$/i, 'steps'],
+  [/^(?:techos?)$/i, 'roof'],
+  [/^(?:cercas?)$/i, 'fence'],
+  [/^(?:canaletas?)$/i, 'gutters'],
+  [/^(?:muchas\s+)?gracias$/i, 'thanks'],
+  [/^por$/i, 'by'],
+];
+const SPANISH_RUN = /\b(?:pies\s+cuadrados|metros\s+cuadrados|pies|metros|entradas?(?:\s+de\s+(?:carros?|coches?|autos?))?|banquetas?|aceras?|veredas?|escalones|escal[oó]n|escaleras?|gradas|techos?|cercas?|canaletas?|(?:muchas\s+)?gracias|(?<=\d\s{0,2})por(?=\s{0,2}\d))(?![\p{L}])/giu;
+const WORD_RUN = new RegExp(`${NUM_RUN.source}|${SPANISH_RUN.source}`, 'giu');
+
+function convertWord(run: string): string {
+  for (const [re, en] of SPANISH) if (re.test(run.replace(/\s+/g, ' '))) return en;
+  return convertRun(run);
+}
+
 class RequestText {
   readonly orig: string;
   readonly text: string;
@@ -198,10 +227,10 @@ class RequestText {
     const shifts: Shift[] = [];
     let text = '';
     let last = 0;
-    NUM_RUN.lastIndex = 0;
+    WORD_RUN.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = NUM_RUN.exec(raw))) {
-      const digits = convertRun(m[0]);
+    while ((m = WORD_RUN.exec(raw))) {
+      const digits = convertWord(m[0]);
       text += raw.slice(last, m.index);
       const newStart = text.length;
       text += digits;
@@ -267,13 +296,15 @@ const overlaps = (a: Span, b: Span) => a.index < b.end && a.end > b.index;
 // ---------- Contact ----------
 
 const NAME_STOP = new Set(
-  'hoping looking wondering just not interested available free home here thinking also please thanks thank hi hello hey the we our my can could would will at from and in on for to with driveway driveways patio patios walkway walkways sidewalk path steps stairs stoop deck pool front back side concrete asphalt brick stone pavers cement flat total about around approx maybe i so ok okay yes no sure great good sorry glad happy new call text email phone cell mobile address'.split(' '),
+  'monday tuesday wednesday thursday friday saturday sunday january february march april july august september october november december tomorrow today tonight weekend morning afternoon evening sir madam maam customer client hoping looking wondering just not interested available free home here thinking also please thanks thank hi hello hey the we our my can could would will at from and in on for to with driveway driveways patio patios walkway walkways sidewalk path steps stairs stoop deck pool front back side concrete asphalt brick stone pavers cement flat total about around approx maybe i so ok okay yes no sure great good sorry glad happy new call text email phone cell mobile address'.split(' '),
 );
 
 function ci(word: string): string {
   return word.replace(/[a-z]/g, (ch) => `[${ch.toUpperCase()}${ch}]`);
 }
-const SUFFIXES = 'street st avenue ave road rd drive dr lane ln court ct boulevard blvd way place pl circle cir terrace ter parkway pkwy highway hwy trail trl loop run crescent cres close alley pike point pt crossing xing ridge row'.split(' ');
+const SUFFIXES = 'street st avenue ave road rd drive dr lane ln court ct boulevard blvd way place pl circle cir terrace ter parkway pkwy highway hwy trail trl loop run crescent cres close alley pike point pt crossing xing ridge row path walk trace cove bend glen grove heights hollow commons square sq'.split(' ');
+/** Sign-off words that only looked like a city after an address (", Thanks"). */
+const CITY_STOP = new Set('thanks thank thx regards cheers best sincerely please hi hello hey call text email phone cell mobile let looking hoping'.split(' '));
 const SUFFIX_CI = `(?:${SUFFIXES.map(ci).join('|')})`;
 const SUFFIX_I = `(?:${SUFFIXES.join('|')})`;
 const DIR = '(?:[NSEW]|NE|NW|SE|SW|North|South|East|West)\\.?';
@@ -288,7 +319,7 @@ const ADDRESS_STOP = /\b(?:ft|feet|foot|sq|square|steps?|stairs?|x|by|minutes?|h
 function addressSpan(m: RegExpExecArray): Span {
   let s = m[0];
   const city = s.match(/,\s*([A-Z][A-Za-z.'-]*)/);
-  if (city?.index != null && NAME_STOP.has(city[1].toLowerCase())) s = s.slice(0, city.index);
+  if (city?.index != null && CITY_STOP.has(city[1].toLowerCase())) s = s.slice(0, city.index);
   return { index: m.index, end: m.index + s.replace(/[.,\s]+$/, '').length };
 }
 
@@ -316,18 +347,26 @@ function findAddress(text: string): Span | null {
   return null;
 }
 
+/** "Mr. Robert Johnson" is Robert Johnson; a title alone is never a name. */
+const TITLE = '(?:(?:Mr|Mrs|Ms|Miss|Mx|Dr)\\.?\\s+)?';
+/** One name word: capitalised, with accents, apostrophes and inner capitals ("José", "McDonald", "O'Neil", "Mary-Jane"). */
+const NAME_WORD = "[A-Z\\u00C0-\\u00DE][a-z\\u00DF-\\u00FF']+(?:-?[A-Z\\u00C0-\\u00DE][a-z\\u00DF-\\u00FF']+)*";
+
 function cleanName(raw: string | undefined): string {
   if (!raw) return '';
-  const words = raw.trim().split(/\s+/);
+  const words = raw.trim().split(/\s+/).filter((w) => !/^(?:mr|mrs|ms|miss|mx|dr)\.?$/i.test(w));
   if (!words[0] || NAME_STOP.has(words[0].toLowerCase())) return '';
   if (words[1] && NAME_STOP.has(words[1].toLowerCase())) return words[0];
   return words.slice(0, 2).join(' ');
 }
 
 function findName(text: string): string {
-  const NAME = "([A-Z][a-z'-]+(?:\\s+[A-Z][a-z'-]+)?)";
+  const NAME = `${TITLE}(${NAME_WORD}(?:[ \\t]+${NAME_WORD})?)`;
   const patterns = [
+    new RegExp(`(?:^|\\n)[ \\t]*(?:[Nn]ame|[Ff]rom|[Cc]ustomer|[Cc]lient|[Cc]ontact)[ \\t]*:[ \\t]*${NAME}`),
     new RegExp(`\\b(?:[Mm]y name is|[Tt]his is|I am|I'm|[Ii]t's|[Ii]t is)\\s+${NAME}`),
+    // "hey its Mike," typed without the apostrophe; only before a comma or the end of a clause.
+    new RegExp(`\\b(?:[Hh]ey|[Hh]i|[Hh]ello)[,!]?\\s+(?:it'?s|its|this\\s+is)\\s+${NAME}(?=\\s*(?:[,.!\\n-]|$|here\\b))`),
     new RegExp(`(?:[Tt]hanks|[Tt]hank you|[Tt]hx|[Rr]egards|[Cc]heers|[Bb]est|[Ss]incerely)[,!.]?\\s*[-\\u2013\\u2014]*\\s*\\n?\\s*${NAME}(?=\\s*(?:$|[\\n.!,]|[-\\u2013\\u2014]|\\(?\\+?\\d))`),
     new RegExp(`(?:^|\\n|[.!?]\\s*|\\s)[-\\u2013\\u2014]{1,2}\\s*${NAME}(?=\\s*(?:$|\\n|[,.]?\\s*\\(?\\+?\\d))`),
   ];
@@ -366,7 +405,7 @@ function findContact(src: RequestText): Contact {
 
 // ---------- Surfaces ----------
 
-const LOC_ADJ = 'front|back|rear|side(?!\\s?walk)|upper|lower|top|bottom|north|south|east|west|left|right|main|second|other|entry|entrance|garden|pool|city|public|porch|guest';
+const LOC_ADJ = 'front|back|rear|side(?!\\s?walk)|upper|lower|top|bottom|north|south|east|west|left|right|main|second|other|entry|entrance|garden|pool|city|public|guest';
 const STAIR_PLACE = 'patio|deck|garage|basement|driveway|porch';
 const MATERIAL = 'concrete|asphalt|pavers?|brick|stone|flagstone|cement|tile|stamped|aggregate|gravel';
 
@@ -376,9 +415,10 @@ const OTHER_SURFACE = '(?:the\\s+|our\\s+|my\\s+)?(?:roofs?|decks?|fenc|gutters?
 /** Order matters: an earlier kind claims the words first ("deck stairs" are stairs, a "pool deck" is a patio). */
 const KIND_NOUNS: { kind: RatedKind; nouns: string; place: string; material?: string }[] = [
   { kind: 'stairs', nouns: 'stair\\s?ways?|stair\\s?cases?|stairs?|steps?|stoops?', place: `${LOC_ADJ}|${STAIR_PLACE}` },
-  { kind: 'driveway', nouns: 'drive\\s?ways?', place: LOC_ADJ },
-  { kind: 'patio', nouns: 'pool\\s+decks?|pool\\s+areas?|patios?|courtyards?|terraces?|lanais?', place: LOC_ADJ },
-  { kind: 'walkway', nouns: 'walk\\s?ways?|side\\s?walks?|walk\\s?paths?|path\\s?ways?|paths?|walks?', place: LOC_ADJ },
+  // Common typing slips ("drivway", "driveay") still name the driveway.
+  { kind: 'driveway', nouns: "drive\\s?ways?|driv(?:e?wa|ea|ew)ys?|drivways?|driveway's", place: LOC_ADJ },
+  { kind: 'patio', nouns: 'pool\\s+decks?|pool\\s+areas?|patios?|courtyards?|terraces?|lanais?|porch(?:es)?|garage\\s+floors?|pavers', place: LOC_ADJ },
+  { kind: 'walkway', nouns: 'walk\\s?ways?|side\\s?walks?|sidwalks?|walk\\s?paths?|path\\s?ways?|paths?|walks?', place: LOC_ADJ },
   {
     kind: 'house',
     // "soft wash the roof" is a way of cleaning the roof, not a house wash.
@@ -400,7 +440,11 @@ const HOME_KINDS: RatedKind[] = ['house', 'roof'];
 function nounGroup(kind: RatedKind, noun: string): string {
   const n = noun.toLowerCase().replace(/\s+/g, '');
   if (kind === 'walkway') return /^sidewalk/.test(n) ? 'sidewalk' : 'walkway';
-  if (kind === 'patio') return /^pool/.test(n) ? 'pooldeck' : 'patio';
+  if (kind === 'patio') {
+    // A porch, a garage floor and loose pavers are their own surfaces, not a second patio.
+    const own = n.match(/^(pool|porch|garage|pavers)/)?.[1];
+    return own ? (own === 'pool' ? 'pooldeck' : own) : 'patio';
+  }
   // "house wash" and "siding" in one message are one service.
   return kind;
 }
@@ -425,7 +469,12 @@ function findMentions(text: string, blocked: Span[]): Mention[] {
         const [s] = sentenceBounds(text, index);
         if (PHANTOM_BEFORE.test(text.slice(s, index))) continue;
         if (/^step$/i.test(noun) && /^\s+(?:by|up|in|out|back|forward|aside|away)\b/i.test(text.slice(end))) continue;
+        // "steps to book", "what steps are needed": the process, not a staircase.
+        if (/^\s+(?:to|for)\s+(?:book|schedul|get\s+(?:started|on)|take|follow|start|proceed|move\s+forward|confirm|hire|sign|set\s+up)/i.test(text.slice(end))) continue;
+        if (/^\s+(?:are\s+|is\s+)?(?:needed|required|involved)\b/i.test(text.slice(end))) continue;
       }
+      // "steps up to the porch": the porch says where the steps are, it is not a surface to price.
+      if (kind === 'patio' && /^porch/i.test(noun) && !second && /\b(?:stairs?|steps?|stoops?)\s+(?:(?:going|leading)\s+)?(?:up\s+)?(?:to|onto|into)\s+(?:the\s+|our\s+|my\s+)?(?:front\s+|back\s+)?$/i.test(text.slice(Math.max(0, index - 40), index))) continue;
       const group = nounGroup(kind, noun);
       const rest = `${material ? `${material} ` : ''}${noun}`;
       const quals = first ? [first, second] : [second ?? ''];
@@ -457,11 +506,12 @@ function findMentions(text: string, blocked: Span[]): Mention[] {
 }
 
 function surfaceName(m: Mention): string {
-  const t = m.label.trim().replace(/\s+/g, ' ');
+  let t = m.label.trim().replace(/\s+/g, ' ');
   // "wash the house" names the service, not a surface called "House".
   if (m.kind === 'house' && /(?:^|\s)(?:house|home)$/i.test(t) && !m.qualifier) return SERVICE_META.house.name;
   if (m.kind === 'house' && /wash(?:ing|es)?$/i.test(t)) return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase().replace(/(?:ing|es)$/, '');
-  const name = m.kind === 'stairs' || m.kind === 'gutters' ? t : t.replace(/s$/i, '');
+  if (m.kind === 'driveway') t = t.replace(/driv[\w']*(?:\s+way'?s?)?$/i, (w) => (/s$/i.test(w) && !/'s$/.test(w) ? 'driveways' : 'driveway'));
+  const name = m.kind === 'stairs' || m.kind === 'gutters' || /pavers$/i.test(t) ? t : t.replace(/(?<=porch)es$|s$/i, '');
   return name ? name.charAt(0).toUpperCase() + name.slice(1).toLowerCase() : SERVICE_META[m.kind].name;
 }
 
@@ -480,6 +530,11 @@ const APPROX = /\b(?:about|around|roughly|approx(?:imately|\.)?|maybe|probably|e
 const COMBINED = /\b(?:total|combined|together|altogether|in\s+all|all\s+in|both)\b/i;
 const EXCLUDE_CUE = /\b(?:excluding|exclude|except(?:\s+for)?|minus|less|not\s+including|without|subtract(?:ing)?|take\s+out|taking\s+out|leave\s+out|leaving\s+out|but\s+not)\s+(?:(?:the|a|an|about|around|roughly|approx(?:imately)?\.?|maybe)\s+)*$/i;
 
+/** "1,400 sq ft total" or "both are about 600": only words next to the size make it a combined area, not "total cost?" elsewhere. */
+function combinedNear(text: string, m: Span, s: number, e: number): boolean {
+  return COMBINED.test(text.slice(Math.max(s, m.index - 30), m.index)) || /^\s*(?:sq\.?\s*ft\.?\s*|square\s+feet\s*)?(?:in\s+)?(?:total|combined|together|altogether|in\s+all|all\s+in|for\s+both|between\s+them)\b/i.test(text.slice(m.end, e));
+}
+
 const lenUnit = (u: string | undefined, fallback: LenUnit): LenUnit => (!u ? fallback : /^m/i.test(u) ? 'm' : 'ft');
 
 function findMeasures(text: string, units: UnitSystem, blocked: Span[]): Measure[] {
@@ -490,7 +545,7 @@ function findMeasures(text: string, units: UnitSystem, blocked: Span[]): Measure
     if (out.some((o) => overlaps(o, m)) || blocked.some((b) => overlaps(b, m))) return;
     const [s, e] = sentenceBounds(text, m.index);
     const before = text.slice(Math.max(s, m.index - 24), m.index);
-    out.push({ ...m, approximate: APPROX.test(before), combinedHint: COMBINED.test(text.slice(s, e)), exclusion: EXCLUDE_CUE.test(text.slice(s, m.index)) });
+    out.push({ ...m, approximate: APPROX.test(before), combinedHint: combinedNear(text, m, s, e), exclusion: EXCLUDE_CUE.test(text.slice(s, m.index)) });
   };
   let m: RegExpExecArray | null;
   const FILL = '\\s*(?:,|and|by|x|\\u00D7)?\\s*(?:(?:about|maybe|around|roughly|approx(?:imately|\\.)?)\\s+)?';
@@ -531,6 +586,11 @@ function findMeasures(text: string, units: UnitSystem, blocked: Span[]): Measure
   while ((m = countAfter.exec(text))) {
     push({ ...base, type: 'count', value: m[1], index: m.index, end: m.index + m[0].length, text: m[0] });
   }
+  // "front steps, 6 of them"
+  const ofThem = /\b(?:stairs|steps|stoops?)\s*[,:-]?\s*(?:there\s+are\s+|about\s+|around\s+)?(\d+)\s+of\s+(?:them|those)\b/gi;
+  while ((m = ofThem.exec(text))) {
+    push({ ...base, type: 'count', value: m[1], index: m.index, end: m.index + m[0].length, text: m[0] });
+  }
   const flight = /flights?\s+of\s+(\d+)\s*(?:stairs|steps)?/gi;
   while ((m = flight.exec(text))) {
     push({ ...base, type: 'count', value: m[1], index: m.index, end: m.index + m[0].length, text: m[0] });
@@ -562,8 +622,7 @@ function findRuns(text: string, units: UnitSystem, mentions: Mention[], blocked:
     const owner = of && tail ? tail : (head as Mention);
     const value = m[1].replace(/,/g, '');
     const aUnit = lenUnit(m[2], dflt);
-    const [cs, ce] = sentenceBounds(text, index);
-    out.push({ type: 'length', a: value, b: '', aUnit, bUnit: aUnit, longSide: 'a', value: '', areaUnit: units === 'metric' ? 'sqm' : 'sqft', index, end, text: m[0], approximate: APPROX.test(text.slice(Math.max(s, index - 24), index)), combinedHint: COMBINED.test(text.slice(cs, ce)), exclusion: EXCLUDE_CUE.test(text.slice(s, index)), ownerAt: owner.index });
+    out.push({ type: 'length', a: value, b: '', aUnit, bUnit: aUnit, longSide: 'a', value: '', areaUnit: units === 'metric' ? 'sqm' : 'sqft', index, end, text: m[0], approximate: APPROX.test(text.slice(Math.max(s, index - 24), index)), combinedHint: combinedNear(text, { index, end }, s, e), exclusion: EXCLUDE_CUE.test(text.slice(s, index)), ownerAt: owner.index });
   }
   return out;
 }
@@ -627,7 +686,7 @@ export function measureIn(m: Measure, unit: Unit): string | null {
 const BUDGET_WORDS = /\b(?:offer(?:ed|ing)?|budget|hoping|hope|willing|pay|spend|afford|keep\s+it|max(?:imum)?|up\s+to|no\s+more\s+than|under|less\s+than|can\s+do|have|thinking)\b/i;
 const COMPETITOR_WORDS = /\b(?:quoted|quote\s+from|another\s+(?:company|guy|person)|someone\s+else|other\s+(?:company|guy)|charged|last\s+year)\b/i;
 const PER_UNIT =
-  /^\s*(?:\/\s*|per\s+|an?\s+|each\b)\s*(sq(?:uare)?\.?\s*(?:ft|feet|foot)\.?|sq\.?\s*m\b|sqm\b|square\s+met(?:er|re)s?|m2|m\u00B2|ft2|linear\s+(?:ft|foot|feet)|lf\b|foot|feet|ft\b|steps?\b|stairs?\b|hours?\b|hr\b|met(?:er|re)s?\b|m\b)?/i;
+  /^\s*(?:\/\s*|per\s+|an?\s+|each\b)\s*(sq(?:uare)?\.?\s*(?:ft|feet|foot)\.?|sq\.?\s*m\b|sqm\b|square\s+met(?:er|re)s?|m2|m\u00B2|ft2|linear\s+(?:ft|foot|feet)|lf\b|foot|feet|ft\b|steps?\b|stairs?\b|hours?\b|hr\b|met(?:er|re)s?\b|m\b|sf\b|sq\b\.?|square\b)?/i;
 const FLAT_AFTER = /^\s*(?:dollars?|bucks)?\s*(?:flat(?:\s+(?:rate|price|fee))?|for\s+(?:the\s+)?(?:whole\s+)?(?:job|thing|lot|it|all))\b/i;
 const FLAT_BEFORE = /\b(?:flat(?:\s+(?:rate|price|fee))?|price[d]?(?:\s+(?:at|is))?|charge|charging|quote[d]?(?:\s+(?:at|is))?)\s*(?:of|is|at|:)?\s*\$?\s*$/i;
 
@@ -636,6 +695,8 @@ interface MoneyToken extends Span {
   per: { family: RateFamily; unit: Unit | null; label: string } | null;
   flat: boolean;
   dollar: boolean;
+  /** Written as cents ("22 cents"). */
+  cents: boolean;
 }
 
 function perUnit(tail: string): MoneyToken['per'] {
@@ -643,7 +704,7 @@ function perUnit(tail: string): MoneyToken['per'] {
   if (!m) return null;
   const u = (m[1] ?? '').toLowerCase().replace(/\s+/g, ' ');
   if (!u) return /^\s*each\b/i.test(tail) ? { family: 'each', unit: 'each', label: 'each' } : null;
-  if (/^sq(?:uare)?\.?\s*(?:ft|feet|foot)|^ft2/.test(u)) return { family: 'area', unit: 'sqft', label: 'per sq ft' };
+  if (/^sq(?:uare)?\.?\s*(?:ft|feet|foot)|^ft2|^sf$|^sq\.?$|^square$/.test(u)) return { family: 'area', unit: 'sqft', label: 'per sq ft' };
   if (/^sq\.?\s*m|^sqm|^square met|^m2|^m\u00B2/.test(u)) return { family: 'area', unit: 'sqm', label: 'per m\u00B2' };
   if (/^linear|^lf/.test(u)) return { family: 'linear', unit: 'ft', label: 'per linear ft' };
   if (/^(?:foot|feet|ft)/.test(u)) return { family: 'foot', unit: null, label: 'per foot' };
@@ -655,17 +716,17 @@ function perUnit(tail: string): MoneyToken['per'] {
 
 function findMoney(text: string, mode: RequestMode, blocked: Span[]): MoneyToken[] {
   const out: MoneyToken[] = [];
-  const add = (index: number, end: number, amount: string, dollar: boolean) => {
+  const add = (index: number, end: number, amount: string, dollar: boolean, cents = false, flatCue = false) => {
     const span = { index, end };
     if (out.some((o) => overlaps(o, span)) || blocked.some((b) => overlaps(b, span))) return;
     const tail = text.slice(end, end + 30);
-    out.push({ index, end, amount, dollar, per: perUnit(tail), flat: FLAT_AFTER.test(tail) || FLAT_BEFORE.test(text.slice(Math.max(0, index - 30), index)) });
+    out.push({ index, end, amount, dollar, cents, per: perUnit(tail), flat: flatCue || FLAT_AFTER.test(tail) || FLAT_BEFORE.test(text.slice(Math.max(0, index - 30), index)) });
   };
   const money = /\$\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)|\b((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:dollars|bucks)\b|\b(\d+)\s*cents?\b/gi;
   let m: RegExpExecArray | null;
   while ((m = money.exec(text))) {
     const amount = m[3] ? Dec.raw(BigInt(m[3]), 2).toString() : (m[1] ?? m[2]).replace(/,/g, '');
-    add(m.index, m.index + m[0].length, amount, true);
+    add(m.index, m.index + m[0].length, amount, true, !!m[3]);
   }
   if (mode === 'operator') {
     // Bare numbers in the operator's own notes: "250 flat", "flat 250", ".15 a foot".
@@ -674,14 +735,31 @@ function findMoney(text: string, mode: RequestMode, blocked: Span[]): MoneyToken
       const index = m.index + m[0].length - m[1].length;
       const end = index + m[1].length;
       const tail = text.slice(end, end + 30);
-      const flat = FLAT_AFTER.test(tail) || FLAT_BEFORE.test(text.slice(Math.max(0, index - 30), index));
+      const lead = text.slice(Math.max(0, index - 12), index);
+      const forJob = /\bfor\s*$/i.test(lead);
+      const flat = forJob || FLAT_AFTER.test(tail) || FLAT_BEFORE.test(text.slice(Math.max(0, index - 30), index));
       const per = perUnit(tail);
-      if (!flat && !(per && per.family !== 'each' && /^\s*(?:\/|per\b|an?\b)/i.test(tail))) continue;
-      add(index, end, m[1].replace(/,/g, ''), false);
+      // "at .22", "@ 3 each", or a price written last ("driveway 20x40 250").
+      const cue = /(?:\bat|@)\s*$/i.test(lead) || /^\s*(?:$|[,;\n]|\.(?:\s|$))/.test(tail);
+      if (!flat && !cue && !(per && per.family !== 'each' && /^\s*(?:\/|per\b|an?\b)/i.test(tail))) continue;
+      add(index, end, m[1].replace(/,/g, ''), cue && !flat, false, forJob);
     }
   }
   return out.sort((a, b) => a.index - b.index);
 }
+
+/** Words that say a size is the home's floor area or a roof footprint, not a cleanable surface. */
+const FOOTPRINT = /\b(?:footprint|pitch|floor\s*(?:area|space|plan)|living\s*(?:area|space)|heated|under\s+roof|\d{1,2}\s*\/\s*12)\b/i;
+const FOREIGN_WORDS = "house|home|story|storey|stories|ranch|split[-\\s]level|colonial|bungalow|condo|townhouse|building|property|lot|yard|lawn|barn|shop|garage(?!\\s+floor)|parking\\s+lot|pad|slab|basement|attic|living\\s+(?:area|space)|footprint";
+const FOREIGN_BEFORE = new RegExp(`\\b(?:${FOREIGN_WORDS})\\b[^,.;!?\\n]{0,4}(?:\\s+(?:is|are|was|of|about|around|roughly|approx(?:imately|\\.)?|maybe|probably|~|at|-|:))*\\s*$`, 'i');
+const FOREIGN_AFTER = new RegExp(`^\\s*(?:\\w+\\s+){0,1}(?:${FOREIGN_WORDS})\\b`, 'i');
+
+const SIDES = /\b(?:both|two|2|each|per)\s+sides?\b/i;
+/** Marks the question about pricing the second side of a fence. */
+export const SIDES_LABEL = 'both sides';
+
+/** Below this, an amount with no unit is a rate, not the price of a line. */
+const SMALL_PRICE = Dec.int(5);
 
 // ---------- Main ----------
 
@@ -751,6 +829,9 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
   /** "roof is about 2,400 sq ft" or "3,000 sq ft of siding" says what the size is. Anything looser is asked. */
   const saysWhat = (m: Mention, meas: Measure) => {
     if (m.kind !== 'roof' && !/siding/i.test(m.label)) return false;
+    // "Roof is 2000 sq ft footprint, 8/12 pitch": a footprint or floor area is not the surface to clean.
+    const [ss, se] = sentenceBounds(text, meas.index);
+    if (FOOTPRINT.test(text.slice(ss, se))) return false;
     if (m.end <= meas.index) return /^\s*(?:is|are|=|:|-)?\s*(?:about|around|roughly|approx(?:imately|\.)?|maybe|probably|~)?\s*$/i.test(text.slice(m.end, meas.index));
     return /^\s*(?:of\s+)?(?:the\s+|our\s+|my\s+)?$/i.test(text.slice(meas.end, m.index));
   };
@@ -774,6 +855,24 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     if (isHome(idx) && !meas.exclusion && (meas.type === 'area' || meas.type === 'rect') && !(by && saysWhat(by, meas))) askWhat(meas, [idx]);
     else attach(idx, meas);
   };
+
+  /** A size written next to a word for something that is not a surface on this quote ("house is 2400 sq ft"). */
+  const foreignNear = (meas: Measure) => {
+    const [ss] = sentenceBounds(text, meas.index);
+    const before = text.slice(Math.max(ss, meas.index - 28), meas.index);
+    const after = text.slice(meas.end, meas.end + 24);
+    return FOREIGN_BEFORE.test(before) || FOREIGN_AFTER.test(after);
+  };
+  /** The size sits right against this surface word ("driveway is about 600", "600 sq ft driveway"). */
+  const tight = (m: Mention, meas: Measure) =>
+    m.end <= meas.index
+      ? /^\s*(?:[:=-]|is|are|was|measures?|about|around|roughly|approx(?:imately|\.)?|maybe|probably|~|\s)*$/i.test(text.slice(m.end, meas.index))
+      : ADJ_GAP.test(text.slice(meas.end, m.index)) && m.index - meas.end <= 20;
+  const homeInSentence = (meas: Measure) => {
+    const [ss, se] = sentenceBounds(text, meas.index);
+    return mentions.some((x) => x.index >= ss && x.end <= se && !x.negated && HOME_KINDS.includes(x.kind));
+  };
+  const areaLike = (meas: Measure) => !meas.exclusion && (meas.type === 'area' || meas.type === 'rect');
 
   const NO_JOIN = /\band\b|&|\+|\bplus\b|\balso\b|\bwith\b/i;
   // "two walkways, one 3x30 and one 4x25": the second size after a first one is another surface of the same kind.
@@ -805,12 +904,26 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
       attach(surfaceOf.get(runOwner) as number, meas);
       continue;
     }
+    const before = areaMentions.filter((x) => x.end <= meas.index && x.index >= s).pop();
+    const after = areaMentions.find((x) => x.index >= meas.end && x.end <= e);
+    if (areaLike(meas)) {
+      const tightTo = after && tight(after, meas) ? after : before && tight(before, meas) ? before : null;
+      // "house is 2400 sq ft" with a driveway on the quote, or "house and driveway, about 2400 sq ft":
+      // the operator says what the size is; it never lands on the driveway by position alone.
+      if ((!tightTo && foreignNear(meas)) || (homeInSentence(meas) && !(tightTo && (HOME_KINDS.includes(tightTo.kind) ? saysWhat(tightTo, meas) : !foreignNear(meas))))) {
+        const near = areaMentions.filter((x) => x.index >= s && x.end <= e && !x.negated).map((x) => surfaceOf.get(x) as number);
+        const pool = near.length ? near : services.map((_, i) => i).filter((i) => services[i].kind !== 'stairs' && !LINEAR_KINDS.includes(services[i].kind as RatedKind));
+        askWhat(meas, pool);
+        continue;
+      }
+    }
     if (!meas.combinedHint) {
-      const before = areaMentions.filter((x) => x.end <= meas.index && x.index >= s).pop();
       const beforeOk = !!before && meas.index - before.end <= 30 && !NO_JOIN.test(text.slice(before.end, meas.index));
-      const after = areaMentions.find((x) => x.index >= meas.end && x.end <= e);
       const afterOk = !!after && after.index - meas.end <= 20 && ADJ_GAP.test(text.slice(meas.end, after.index));
-      if (after && afterOk && (!beforeOk || ARTICLE.test(text.slice(s, meas.index)))) {
+      // "20x40 driveway, 10x10 patio": a size written just before a surface word belongs to it,
+      // unless it plainly continues the surface before it ("the driveway is about 600").
+      const beforeLoose = !!before && (/[,;]/.test(text.slice(before.end, meas.index)) || !!services[surfaceOf.get(before) as number].measure);
+      if (after && afterOk && (!beforeOk || beforeLoose || ARTICLE.test(text.slice(s, meas.index)))) {
         place(surfaceOf.get(after) as number, meas, after);
         continue;
       }
@@ -884,9 +997,26 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     });
   }
 
+  // Operator notes: "10% off", "minimum 150", "trip fee 25" set the quote's own adjustments.
+  const adjust: ParsedRequest['adjust'] = { discountPercent: '', minimum: '', trip: '' };
+  const adjustSpans: Span[] = [];
+  if (mode === 'operator') {
+    const grab = (re: RegExp, key: keyof ParsedRequest['adjust']) => {
+      const m = text.match(re);
+      if (!m || m.index == null) return;
+      const v = Dec.parse((m[1] ?? m[2] ?? '').replace(/,/g, ''));
+      if (!v || v.sign() <= 0 || (key === 'discountPercent' && v.cmp(Dec.int(100)) >= 0)) return;
+      adjust[key] = v.toString();
+      adjustSpans.push({ index: m.index, end: m.index + m[0].length });
+    };
+    grab(/\b(\d+(?:\.\d+)?)\s*%\s*(?:off|discount)\b|\bdiscount\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*%/i, 'discountPercent');
+    grab(/\b(?:min(?:imum)?(?:\s+(?:charge|price|job))?)\s*(?:is|of|:|=)?\s*\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)/i, 'minimum');
+    grab(/\b(?:trip|travel)(?:\s+(?:fee|charge))?\s*(?:is|of|:|=)?\s*\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)/i, 'trip');
+  }
+
   // Money: a budget is never a price. Prices come only from the operator's own notes.
   let budget: ParsedRequest['budget'] = null;
-  const usedSpans = [...contact.spans, ...measures];
+  const usedSpans = [...contact.spans, ...measures, ...adjustSpans];
   for (const tok of findMoney(text, mode, usedSpans)) {
     const [s, e] = sentenceBounds(text, tok.index);
     const before = text.slice(Math.max(s, tok.index - 60), tok.index);
@@ -901,6 +1031,19 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
         payload: label ? { amount: tok.amount, label } : { amount: tok.amount },
       });
     if (mode === 'operator' && (tok.per || tok.flat || tok.dollar) && !COMPETITOR_WORDS.test(before) && !BUDGET_WORDS.test(before)) {
+      // "driveway 1200 sf 22 cents": cents, or a few dollars, next to a surface is its rate, never the price of the whole line.
+      if (!tok.per && !tok.flat && (tok.cents || (Dec.parse(tok.amount)?.cmp(SMALL_PRICE) ?? 1) < 0)) {
+        const t = targetSurface(tok, 'any', s, e);
+        if (t >= 0 && units === 'imperial' && !services[t].rate) {
+          const stairs = services[t].kind === 'stairs';
+          services[t].rate = stairs
+            ? { amount: tok.amount, family: 'each', unit: 'each', label: 'per step', evidence }
+            : { amount: tok.amount, family: 'foot', unit: null, label: LINEAR_KINDS.includes(services[t].kind as RatedKind) ? 'per foot' : 'per sq ft', evidence };
+          continue;
+        }
+        ask();
+        continue;
+      }
       const target = targetSurface(tok, tok.per?.family === 'each' ? 'stairs' : tok.per ? 'area' : 'any', s, e);
       if (target >= 0 && tok.per) {
         services[target].rate = { amount: tok.amount, family: tok.per.family, unit: tok.per.unit, label: tok.per.label, evidence };
@@ -937,11 +1080,27 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     return anchors.some((a) => a.end <= tok.index && tok.index - a.end <= 14 && !NO_JOIN.test(text.slice(a.end, tok.index)));
   }
 
+  const others = new Set<string>();
+  const mentionOther = (label: string, index: number, end: number) => {
+    if (others.has(label.toLowerCase())) return;
+    others.add(label.toLowerCase());
+    questions.push({ kind: 'other_service', prompt: `The request also mentions: ${label.toLowerCase()}.`, evidence: snippet(src, index, end), serviceIdx: [], payload: { label } });
+  };
   for (const o of OTHER_SERVICES) {
     const m = text.match(o.re);
-    if (m && m.index != null) {
-      questions.push({ kind: 'other_service', prompt: `The request also mentions: ${o.label.toLowerCase()}.`, evidence: snippet(src, m.index, m.index + m[0].length), serviceIdx: [], payload: { label: o.label } });
-    }
+    if (m && m.index != null && !contact.spans.some((b) => overlaps(b, { index: m.index as number, end: (m.index as number) + m[0].length }))) mentionOther(o.label, m.index, m.index + m[0].length);
+  }
+  // Nothing is dropped silently: "clean my shed" names something to price even when it is not a known surface.
+  WASH_OBJECT.lastIndex = 0;
+  let wm: RegExpExecArray | null;
+  while ((wm = WASH_OBJECT.exec(text))) {
+    const index = wm.index + wm[0].length - wm[1].length;
+    const end = wm.index + wm[0].length;
+    const word = wm[1].toLowerCase().replace(/\s+/g, ' ');
+    if (WASH_SKIP.test(word.split(' ')[0])) continue;
+    if (mentions.some((x) => overlaps(x, { index, end })) || contact.spans.some((b) => overlaps(b, { index, end }))) continue;
+    if (OTHER_SERVICES.some((o) => o.re.test(word)) || CONDITIONS.some((c) => c.re.test(word))) continue;
+    mentionOther(word.charAt(0).toUpperCase() + word.slice(1), index, end);
   }
   for (const c of CONDITIONS) {
     const m = text.match(c.re);
@@ -949,6 +1108,24 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
       questions.push({ kind: 'condition', prompt: `${who === 'Your notes' ? 'Your notes mention' : 'The customer mentioned'} ${c.label.toLowerCase()}.`, evidence: snippet(src, m.index, m.index + m[0].length), serviceIdx: [], payload: { label: c.line } });
     }
   }
+
+  // "both sides at $2 a foot per side": a fence length is one side. Whether the rate covers both is the operator's call.
+  services.forEach((svc, i) => {
+    if (svc.kind !== 'fence' || svc.negated || !svc.measure || svc.measure.type !== 'length') return;
+    const m = svc.measure;
+    const [ss, se] = sentenceBounds(text, m.index);
+    const own = mentions.filter((x) => surfaceOf.get(x) === i).map((x) => sentenceBounds(text, x.index));
+    const said = [[ss, se], ...own].some(([a, b]) => SIDES.test(text.slice(a, b)));
+    if (!said) return;
+    questions.push({
+      kind: 'extra_measure',
+      prompt: `${mode === 'operator' ? 'Your notes mention' : 'The customer asked for'} both sides of the ${lower(i)}. Is ${describeMeasure(m).replace(/ long$/, '')} one side?`,
+      evidence: snippet(src, m.index, m.end),
+      serviceIdx: [i],
+      payload: { label: SIDES_LABEL },
+      measure: m,
+    });
+  });
 
   services.forEach((svc, i) => {
     if (svc.negated) {
@@ -963,24 +1140,45 @@ export function parseRequest(raw: string, opts: ParseOptions = {}): ParsedReques
     }
     const covered = questions.some((q) => (q.kind === 'combined_area' || q.kind === 'extra_measure' || q.kind === 'size_meaning') && q.serviceIdx.includes(i));
     if (!svc.measure && !covered && !svc.flatPrice) {
+      // "2 car driveway": a size the operator can answer once and reuse.
+      const sizeKey = svc.kind === 'driveway' ? carSizeKey(svc.evidence) : null;
       questions.push({
         kind: 'missing_qty',
-        prompt:
-          svc.kind === 'stairs' ? `How many steps for the ${lower(i)}?` : LINEAR_KINDS.includes(svc.kind as RatedKind) ? `How long is the ${lower(i)}?` : `How big is the ${lower(i)}?`,
+        prompt: sizeKey
+          ? `How big is your usual ${sizeKeyLabel(sizeKey)}?`
+          : svc.kind === 'stairs'
+            ? `How many steps for the ${lower(i)}?`
+            : LINEAR_KINDS.includes(svc.kind as RatedKind)
+              ? `How long is the ${lower(i)}?`
+              : `How big is the ${lower(i)}?`,
         evidence: svc.evidence,
         serviceIdx: [i],
-        payload: {},
+        payload: sizeKey ? { sizeKey } : {},
       });
     }
   });
 
-  return { text: raw, mode, units, services, questions, customer: { name: contact.name, phone: contact.phone, email: contact.email, address: contact.address }, budget };
+  return { text: raw, mode, units, services, questions, customer: { name: contact.name, phone: contact.phone, email: contact.email, address: contact.address }, budget, adjust };
 }
 
 const OTHER_SERVICES: { label: string; re: RegExp }[] = [
   { label: 'Windows', re: /\bwindows?\b/i },
-  { label: 'Garage floor', re: /\bgarage\s+floor\b/i },
+  { label: 'Curb', re: /\bcurb(?:s|ing)?\b/i },
+  { label: 'Retaining wall', re: /\bretaining\s+walls?\b/i },
+  { label: 'Shed', re: /\bsheds?\b/i },
+  { label: 'Dock', re: /\b(?:boat\s+)?docks?\b/i },
+  { label: 'Pergola', re: /\bpergolas?\b/i },
+  { label: 'Gazebo', re: /\bgazebos?\b/i },
+  { label: 'Outdoor furniture', re: /\b(?:patio|outdoor|lawn)\s+furniture\b/i },
+  { label: 'Solar panels', re: /\bsolar\s+panels?\b/i },
+  { label: 'Pool cage', re: /\b(?:pool|screen)\s+(?:cage|enclosure)s?\b/i },
+  { label: 'Playset', re: /\b(?:playsets?|play\s+sets?|swing\s+sets?)\b/i },
 ];
+
+/** "wash my X" / "clean off the X": X is something the operator should see, even if no surface word matched. */
+const WASH_OBJECT =
+  /\b(?:(?:pressure|power|soft)[\s-]?)?(?:wash|clean|rinse)(?:ed|ing)?\s+(?:off\s+|down\s+)?(?:the|my|our|a|an|his|her|their)\s+((?:[a-z]+\s+)?(?:wall|walls|floor|floors|lot|area|panels?|furniture|cage|enclosure|doors?|pad|slab|siding|bricks?|columns?|ramp|lift|tank)\b|[a-z]{3,}\b)/gi;
+const WASH_SKIP = /^(?:whole|entire|rest|outside|inside|exterior|front|back|side|place|property|area|stuff|things?|everything|all|it|them|this|that|these|those|same|other|old|new|dirty|car|cars|truck|trucks|house|home|first|second|last|next|best|price|cost|job|work|quote|estimate)$/;
 
 const CONDITIONS: { label: string; line: string; re: RegExp }[] = [
   { label: 'Oil stains', line: 'Oil stain treatment', re: /\boil(?:\s+(?:stains?|spots?|marks?))?\b/i },
@@ -1017,7 +1215,18 @@ function applyMeasure(line: Line, m: Measure, exclusions: Measure[]): void {
   }
   if (line.qtyType === 'linear') {
     const len = measureIn(m, line.unit);
-    if (len) line.qty = len;
+    if (!len) return;
+    const left = exclusions.map((ex) => ({ ex, v: measureIn(ex, line.unit) })).filter((x): x is { ex: Measure; v: string } => !!x.v);
+    if (left.length === 0) {
+      line.qty = len;
+      return;
+    }
+    // "150 ft excluding 20 ft": both stay visible and only the included length is priced.
+    line.qtyMode = 'parts';
+    line.parts = [
+      { id: makeId('p'), shape: 'value', a: len, b: '', subtract: false, label: m.aUnit === (line.unit === 'm' ? 'm' : 'ft') ? '' : describeMeasure(m) },
+      ...left.map(({ ex, v }) => ({ id: makeId('p'), shape: 'value' as const, a: v, b: '', subtract: true, label: `Left out: ${describeMeasure(ex)}` })),
+    ];
     return;
   }
   if (line.qtyType !== 'area') return;
@@ -1071,7 +1280,8 @@ export function draftFromRequest(parsed: ParsedRequest, settings: Settings): Dra
     if (svc.rate) {
       const amount = Dec.parse(svc.rate.amount);
       if (amount && rateFits(line, svc.rate.family)) {
-        const from = svc.rate.unit;
+        // "a foot" is per foot on a fence and per square foot on flatwork, whatever units the app is set to.
+        const from: Unit | null = svc.rate.unit ?? (svc.rate.family === 'foot' ? (line.qtyType === 'linear' ? 'ft' : line.qtyType === 'area' ? 'sqft' : null) : null);
         const converted = from && from !== line.unit && (line.qtyType === 'area' || line.qtyType === 'linear') ? convertRate(amount, from, line.unit) : amount;
         line.rate = converted.toString();
         line.rateSource = 'entered';
@@ -1104,11 +1314,26 @@ export function draftFromRequest(parsed: ParsedRequest, settings: Settings): Dra
     if (parsed.mode === 'operator') payload.from = 'operator';
     if (q.measure) {
       const target = draft.lines.find((l) => l.id === ids[0]);
-      const unit: Unit = q.measure.type === 'count' ? 'each' : target?.qtyType === 'area' ? target.unit : areaUnitFor(settings.units);
+      const unit: Unit =
+        q.measure.type === 'count' ? 'each' : target && (target.qtyType === 'area' || target.qtyType === 'linear') ? target.unit : q.measure.type === 'length' ? (settings.units === 'metric' ? 'm' : 'ft') : areaUnitFor(settings.units);
       payload.area = measureIn(q.measure, unit) ?? '';
       payload.unit = unit;
     }
-    return { id: makeId('q'), kind: q.kind, prompt: q.prompt, evidence: q.evidence, lineIds: ids, resolved: false, answer: '', payload };
+    let prompt = q.prompt;
+    const target = draft.lines.find((l) => l.id === ids[0]);
+    if (q.kind === 'missing_qty' && payload.sizeKey) {
+      // Only the operator's own saved size is offered, and only in the unit this line is priced in.
+      const saved = settings.savedSizes?.[payload.sizeKey];
+      if (!target || target.qtyType !== 'area') delete payload.sizeKey;
+      else payload.unit = target.unit;
+      if (target && payload.sizeKey && saved && saved.unit === target.unit) {
+        payload.area = saved.qty;
+        payload.unit = saved.unit;
+        prompt = `Use your usual ${sizeKeyLabel(payload.sizeKey)} size?`;
+      }
+      if (!payload.sizeKey) prompt = `How big is the ${(target?.name ?? 'driveway').toLowerCase()}?`;
+    }
+    return { id: makeId('q'), kind: q.kind, prompt, evidence: q.evidence, lineIds: ids, resolved: false, answer: '', payload };
   });
   draft.questions.push(...extra);
   // A size that does not fit how a service is priced (an area for a per-foot line) still needs a number.
@@ -1136,6 +1361,10 @@ export function draftFromRequest(parsed: ParsedRequest, settings: Settings): Dra
   });
   const c = parsed.customer;
   draft.customer = { name: c.name, phone: c.phone, email: c.email, address: c.address, source: parsed.mode === 'operator' ? 'operator' : 'customer' };
+  const adj = parsed.adjust;
+  if (adj?.discountPercent) draft.pricing.discount = { ...draft.pricing.discount, kind: 'percent', value: adj.discountPercent };
+  if (adj?.minimum) draft.pricing.minimum = { state: 'known_value', amount: adj.minimum, source: 'operator' };
+  if (adj?.trip) draft.pricing.trip = { ...draft.pricing.trip, state: 'known_value', amount: adj.trip, source: 'operator' };
   if (parsed.budget) draft.budget = { state: 'known_value', amount: parsed.budget.amount, source: 'customer', evidence: parsed.budget.evidence };
   return draft;
 }

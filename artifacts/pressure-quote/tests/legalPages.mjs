@@ -29,4 +29,5 @@ for (const [name, url, page] of [['PRIVACY_URL', PRIVACY_URL, 'privacy'], ['TERM
 }
 const serve = readFileSync(join(root, 'server', 'serve.js'), 'utf8');
 if (!serve.includes("'pages'")) fail('server/serve.js does not serve server/pages');
+if (/manifest\.json|static-build|expo-platform/.test(serve)) fail('server/serve.js must not serve the Expo Go manifest or bundles on the public site');
 if (!process.exitCode) console.log('Legal pages match the app text.');

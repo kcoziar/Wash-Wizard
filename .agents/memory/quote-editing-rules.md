@@ -12,6 +12,10 @@ description: Non-obvious product rules for sizes, rates, unit/basis switches, co
 - Parser text is normalised before matching ("one" arrives as "1"), so enumerator regexes must accept digits.
 - Sample/example jobs never offer "save as my rate" and never count toward free quotes, past customers or time suggestions.
 - Earlier-customer suggestions show only while address and phone are empty, so they never nag once details are in.
+- Usual sizes (e.g. 2-car driveway) come only from the operator's own first answer; it is never overwritten by a later per-job size and only offered when the line's unit matches.
+- "Same customer, just a correction" is offered once per job; a new visit is detected by name or phone change.
+- The customer PDF keeps saying "Job minimum adjustment" even though operator toggles were reworded; that customer wording is intentional.
+- Issue lists group per line ("Driveway: add a size and your rate"); a qty item is dropped when a size question is already open. Grouping lives in resolve.ts because pricing.ts is frozen.
 
 **Why:** these came from the production review and the owner's "never invent numbers / blank is never zero" stance; each was a reported bug or a deliberate trade-off.
 **How to apply:** check here before changing line editing, copies, setup or rate helpers.

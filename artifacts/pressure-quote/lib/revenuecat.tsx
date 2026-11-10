@@ -20,7 +20,11 @@ export const REVENUECAT_ENTITLEMENT_IDENTIFIER = 'pro';
  */
 export const IS_TEST_STORE = __DEV__ || Platform.OS === 'web' || Constants.executionEnvironment === 'storeClient';
 
-const PENDING_WINDOW_MS = 72 * 60 * 60 * 1000;
+/**
+ * How long a purchase that has not unlocked Pro yet blocks a second purchase. Kept short: if the
+ * App Store never confirms it, the buyer gets Restore and Support instead of a locked button.
+ */
+const PENDING_WINDOW_MS = 10 * 60 * 1000;
 
 const keyChoice = pickRevenueCatKey({
   testStore: IS_TEST_STORE,
@@ -75,6 +79,8 @@ interface SubscriptionValue {
   unavailableReason: string | null;
   /** True while a purchase or restore is running; no second one can start. */
   busy: boolean;
+  /** An earlier purchase on this phone never switched Pro on, and the short wait for it is over. */
+  unconfirmedPurchase: boolean;
   /** Exact intro-offer wording for a package the user is eligible for, or null. */
   introFor: (pkg: PurchasesPackage, period: 'year' | 'month') => string | null;
   refresh: () => Promise<EntitlementStatus>;
@@ -119,6 +125,7 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
   const [validUntil, setValidUntilState] = useState<number | null>(null);
   const [introEligible, setIntroEligible] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  const [unconfirmedPurchase, setUnconfirmed] = useState(false);
   const pendingRef = useRef<number | null>(null);
   const lastRefresh = useRef(0);
   const statusRef = useRef<EntitlementStatus>(status);
@@ -140,6 +147,7 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
       const ent = ci.entitlements.active[REVENUECAT_ENTITLEMENT_IDENTIFIER];
       if (ent) {
         pendingRef.current = null;
+        setUnconfirmed(false);
         writePendingPurchase(null).catch(() => undefined);
         writeEntitlementCache({ verifiedAt: Date.now(), expiresAt: ent.expirationDateMillis ?? null, productId: ent.productIdentifier }).catch(() => undefined);
         setValidUntil(ent.expirationDateMillis ?? null);
@@ -154,6 +162,7 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
         setStatus('pending');
         return 'pending';
       }
+      setUnconfirmed(!!pendingSince);
       const next: EntitlementStatus = ci.entitlements.all[REVENUECAT_ENTITLEMENT_IDENTIFIER] ? 'expired' : 'none';
       setStatus(next);
       return next;
@@ -306,6 +315,11 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
     setBusy(true);
     try {
       const ci = await Purchases.restorePurchases();
+      // Restore is the App Store's own answer: nothing found means nothing is waiting, so the buy button comes back.
+      if (!ci.entitlements.active[REVENUECAT_ENTITLEMENT_IDENTIFIER]) {
+        pendingRef.current = null;
+        await writePendingPurchase(null).catch(() => undefined);
+      }
       await apply(ci);
       return ci.entitlements.active[REVENUECAT_ENTITLEMENT_IDENTIFIER] ? { kind: 'restored' } : { kind: 'nothing' };
     } catch (e) {
@@ -370,10 +384,11 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
       loadOffering,
       purchase,
       restore,
+      unconfirmedPurchase,
       openManage,
       diagnostics,
     }),
-    [status, validUntil, info, ent, offering, offeringState, offeringError, busy, introFor, refresh, verify, loadOffering, purchase, restore, openManage, diagnostics],
+    [status, validUntil, info, ent, offering, offeringState, offeringError, busy, unconfirmedPurchase, introFor, refresh, verify, loadOffering, purchase, restore, openManage, diagnostics],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import * as StoreReview from 'expo-store-review';
 import { Platform } from 'react-native';
-import { decideAccess, isNewVisit, type AccessDecision } from './access';
+import { customerKey, decideAccess, isNewVisit, type AccessDecision } from './access';
 import { TEMPLATE_VERSION } from './defaults';
 import { buildQuoteDoc } from './document';
 import { computeEconomics, type Econ } from './economics';
@@ -56,7 +56,10 @@ const BLOCK_TEXT = 'NEEDS_ACCESS';
 
 function newVisitFor(job: Job, draft: Draft): boolean {
   const latest = latestRevision(job);
-  return latest ? isNewVisit({ name: latest.doc.customer.name, address: latest.doc.customer.address }, { name: draft.customer.name, address: draft.customer.address }) : false;
+  if (!latest) return false;
+  // The operator said this is the same customer, just corrected: that one change stays a free correction.
+  if (job.correctedCustomer && job.correctedCustomer === customerKey(draft.customer)) return false;
+  return isNewVisit({ name: latest.doc.customer.name, phone: latest.inputs?.customer?.phone ?? '' }, draft.customer);
 }
 
 export function useCreateQuote() {

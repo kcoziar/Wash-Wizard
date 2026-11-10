@@ -49,7 +49,8 @@ export default function CaptureScreen() {
   const building = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const units = store.settings.units;
-  const parsed = useMemo(() => (text.trim().length >= 8 ? parseRequest(text, { units, mode }) : null), [text, units, mode]);
+  // Any non-empty text can start a quote; a short one simply finds less.
+  const parsed = useMemo(() => (text.trim() ? parseRequest(text, { units, mode }) : null), [text, units, mode]);
   const notes = mode === 'operator';
 
   const persist = (t: string) => {

@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { CORE_KINDS, RATED_KINDS, defaultRate, defaultSettings, newDraft } from './defaults';
 import { withDraft } from './jobState';
+import { parseNonNeg } from './decimal';
 import { isSafeLogo } from './logo';
-import type { Draft, Job, Ledger, Line, Meta, Outcome, Question, QuoteDoc, Revision, SavedService, Settings, ShareRecord, TimeEntry } from './types';
+import { SIZE_KEY } from './sizes';
+import type { Draft, Job, Ledger, Line, Meta, Outcome, Question, QuoteDoc, Revision, SavedService, SavedSize, Settings, ShareRecord, TimeEntry } from './types';
 
 /**
  * Local persistence. Every record lives under its own key so a single write is atomic per record.
@@ -198,6 +200,7 @@ function normalizeQuestion(raw: unknown): Question | null {
   if (typeof p.amount === 'string') payload.amount = p.amount.slice(0, 40);
   if (typeof p.label === 'string') payload.label = p.label.slice(0, 120);
   if (p.from === 'operator') payload.from = 'operator';
+  if (typeof p.sizeKey === 'string' && SIZE_KEY.test(p.sizeKey)) payload.sizeKey = p.sizeKey;
   return {
     id: raw.id.slice(0, 64),
     kind: raw.kind as Question['kind'],
@@ -252,6 +255,13 @@ export function normalizeSettings(raw: unknown): Settings {
     .slice(0, 50)
     .map(normalizeService)
     .filter((x): x is SavedService => x !== null);
+  s.savedSizes = {};
+  const sizes = isObj(raw) && isObj(raw.savedSizes) ? raw.savedSizes : {};
+  for (const [k, v] of Object.entries(sizes).slice(0, 50)) {
+    if (!SIZE_KEY.test(k) || !isObj(v) || typeof v.qty !== 'string' || typeof v.unit !== 'string' || !(UNITS as readonly string[]).includes(v.unit)) continue;
+    const d = parseNonNeg(v.qty);
+    if (d && !d.isZero()) s.savedSizes[k] = { qty: v.qty.trim().slice(0, 20), unit: v.unit as SavedSize['unit'] };
+  }
   return s;
 }
 
@@ -435,6 +445,7 @@ export function readJobRecord(raw: unknown, opts: ReadOpts): { job: Job | null; 
     shares: (Array.isArray(raw.shares) ? raw.shares : []).slice(0, 2000).map(normalizeShare).filter((x): x is ShareRecord => x !== null),
     outcome: normalizeOutcome(raw.outcome),
     useForSuggestions: raw.useForSuggestions !== false && !sample,
+    ...(typeof raw.correctedCustomer === 'string' && raw.correctedCustomer ? { correctedCustomer: raw.correctedCustomer.slice(0, 300) } : {}),
   };
   if (job.status === 'draft' && revisions.length) job.status = 'quoted';
   return { job, dropped };
@@ -791,8 +802,10 @@ export function commitFinalization(snapshot: Job, finalizationId: string, decide
         return { ok: false, reason: 'storage', message: 'This job could not be read from storage. Nothing was used.', committed: 'no' };
       }
       const stored = read?.job ?? null;
+      // A job deleted (or wiped by Delete all) while its quote was being made stays deleted, and nothing is used.
+      if (!stored) return { ok: false, reason: 'conflict', message: 'This job was deleted, so the quote was not made. Nothing was used.', committed: 'no' };
       const ledger = await readLedger();
-      const base: Job = stored ?? { ...snapshot, pendingFinalizationId: null };
+      const base: Job = stored;
 
       const existing = base.revisions.find((r) => r.finalizationId === finalizationId);
       if (existing) {
@@ -811,7 +824,10 @@ export function commitFinalization(snapshot: Job, finalizationId: string, decide
       const logos = new Map<string, string>();
       await writeWithLogos([[journalKey(finalizationId), JSON.stringify({ ...j, revision: dehydrateRevision(j.revision, logos) })]], logos);
       journalWritten = true;
-      const done = applyCommit(base, ledger, j, snapshot.draft);
+      // Edits saved after the snapshot was taken are newer than the quote: they stay, marked as changed since it.
+      const newer = stored.updatedAt > snapshot.updatedAt && JSON.stringify(stored.draft) !== JSON.stringify(snapshot.draft);
+      const done = applyCommit(base, ledger, j, newer ? stored.draft : snapshot.draft);
+      if (newer) done.job = { ...done.job, dirtySince: done.job.dirtySince ?? j.at };
       await writeJobRecord(done.job, [[KEYS.ledger, JSON.stringify(done.ledger)]]);
       await db().removeItem(journalKey(finalizationId)).catch(() => undefined);
       return { ok: true, job: done.job, ledger: done.ledger, revision: decision.revision, repeated: false };
@@ -977,6 +993,7 @@ export function checkBackup(input: string, existingIds: Set<string>): BackupChec
 export function importJobs(jobs: Job[]): Promise<{ saved: Job[]; notSaved: number }> {
   return serial(async () => {
     const saved: Job[] = [];
+    const preexisting = new Set<string>();
     let alreadyHere = 0;
     for (let i = 0; i < jobs.length; i += 25) {
       const batch = jobs.slice(i, i + 25);
@@ -984,12 +1001,23 @@ export function importJobs(jobs: Job[]): Promise<{ saved: Job[]; notSaved: numbe
         const present = await db().multiGet(batch.map((j) => jobKey(j.id)));
         const taken = new Set(present.filter(([, v]) => v != null).map(([k]) => k));
         const fresh = batch.filter((j) => !taken.has(jobKey(j.id)));
+        for (const j of batch) if (taken.has(jobKey(j.id))) preexisting.add(j.id);
         alreadyHere += batch.length - fresh.length;
         const logos = new Map<string, string>();
         const pairs = fresh.map((j) => [jobKey(j.id), JSON.stringify(dehydrateJob(j, logos))] as [string, string]);
         if (pairs.length) await writeWithLogos(pairs, logos);
         saved.push(...fresh);
       } catch {
+        // A failed batch may still have written some records. Count what is really there, so the
+        // operator is told exactly what was saved.
+        try {
+          const batch = jobs.slice(i, i + 25);
+          const there = new Set((await db().multiGet(batch.map((j) => jobKey(j.id)))).filter(([, v]) => v != null).map(([k]) => k));
+          const before = new Set(saved.map((j) => j.id));
+          saved.push(...batch.filter((j) => there.has(jobKey(j.id)) && !before.has(j.id) && !preexisting.has(j.id)));
+        } catch {
+          // Unreadable right now: report only what is known to be saved.
+        }
         return { saved, notSaved: jobs.length - saved.length - alreadyHere };
       }
     }

@@ -18,8 +18,9 @@ import {
   type LegalSection,
 } from '../constants/legal';
 
-export type LegalPage = 'privacy' | 'terms' | 'support';
-export const LEGAL_PAGES: LegalPage[] = ['privacy', 'terms', 'support'];
+export type LegalPage = 'privacy' | 'terms' | 'support' | 'index';
+/** Served pages. "index" is the plain product page at the site root. */
+export const LEGAL_PAGES: LegalPage[] = ['privacy', 'terms', 'support', 'index'];
 
 const c = colors.light;
 
@@ -42,6 +43,7 @@ const NAV: { page: LegalPage; label: string }[] = [
 
 function shell(page: LegalPage, title: string, lede: string, body: string): string {
   const nav = NAV.map((n) => (n.page === page ? `<span aria-current="page">${n.label}</span>` : `<a href="/${n.page}">${n.label}</a>`)).join('');
+  const brand = page === 'index' ? esc(APP_NAME) : `<a href="/">${esc(APP_NAME)}</a>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -54,6 +56,7 @@ function shell(page: LegalPage, title: string, lede: string, body: string): stri
 body{margin:0;background:${c.background};color:${c.foreground};font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 header{background:${c.hero};color:${c.heroForeground};padding:28px 20px 30px;border-bottom:4px solid ${c.accent}}
 .wrap{max-width:720px;margin:0 auto}
+.app a{color:inherit;text-decoration:none}
 .app{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:${c.heroMuted};margin:0 0 6px}
 h1{font-size:30px;line-height:1.15;margin:0 0 8px}
 .lede{margin:0;color:${c.heroMuted}}
@@ -73,7 +76,7 @@ footer{font-size:14px;color:${c.mutedForeground};padding:0 20px 40px}
 </head>
 <body>
 <header><div class="wrap">
-<p class="app">${esc(APP_NAME)}</p>
+<p class="app">${brand}</p>
 <h1>${esc(title)}</h1>
 <p class="lede">${esc(lede)}</p>
 <nav aria-label="Pages">${nav}</nav>
@@ -88,6 +91,21 @@ ${body}
 }
 
 export function renderLegalPage(page: LegalPage): string {
+  if (page === 'index') {
+    const feature = (title: string, body: string) => `<section><h2>${esc(title)}</h2><p>${esc(body)}</p></section>`;
+    return shell(
+      page,
+      'Quotes from customer texts',
+      'An iPhone app for pressure washing operators.',
+      `<div class="card">
+${feature('Paste the message, get the quote', 'Paste the text a customer sent you. The app picks out the services, sizes, name and address, and asks you about anything it cannot be sure of. It never guesses a size or turns a budget into a price.')}
+${feature('Your own prices', 'Your rates per square foot, per linear foot, per step, by the hour or a flat price. Minimum charge, trip fee, discount, tax and deposit.')}
+${feature('Send it', 'Share a clean PDF quote or text it from Messages, then mark it Sent, Accepted or Declined.')}
+${feature('Your data stays with you', 'No account. Jobs and customer details stay on your iPhone.')}
+${feature('Price', 'Three complete quotes free. Pro is $9.99 a month or $59.99 a year, billed by Apple. Cancel any time in your Apple account.')}
+</div>`,
+    );
+  }
   if (page === 'privacy') {
     return shell(page, 'Privacy policy', 'Your jobs and customers stay on your iPhone.', `<p class="updated">Updated ${esc(LEGAL_UPDATED)}</p>\n<div class="card">\n${sections(PRIVACY)}\n</div>`);
   }

@@ -12,6 +12,8 @@ import { duration, makeId, money, moneyRate, number, perUnitLabel, rateInput, sh
 import { computeQuote, type CalcLine } from '@/lib/pricing';
 import type { InputState, Job, JobStatus, Line, Part, Question, RatedKind, Settings, Unit } from '@/lib/types';
 import type { Resolution } from '@/lib/resolve';
+import { SIDES_LABEL } from '@/lib/parser';
+import { sizeKeyLabel } from '@/lib/sizes';
 
 // ---------- Rate from time ----------
 
@@ -71,13 +73,13 @@ export function StatusChip({ status, sample, hero }: { status: JobStatus; sample
     <View style={{ flexDirection: 'row', gap: 6 }}>
       {sample ? (
         <View style={{ backgroundColor: c.uncertainSoft, borderRadius: 999, paddingHorizontal: 9, height: 24, justifyContent: 'center', borderWidth: 1, borderColor: c.uncertainBorder, borderStyle: 'dashed' }}>
-          <T v="smallStrong" color={c.uncertain} style={{ fontSize: 11.5 }}>
+          <T v="smallStrong" color={c.uncertain} style={{ fontSize: 13 }}>
             Sample
           </T>
         </View>
       ) : null}
       <View style={{ backgroundColor: tone.bg, borderRadius: 999, paddingHorizontal: 10, height: 24, justifyContent: 'center' }}>
-        <T v="smallStrong" color={tone.fg} style={{ fontSize: 11.5 }}>
+        <T v="smallStrong" color={tone.fg} style={{ fontSize: 13 }}>
           {STATUS_LABEL[status]}
         </T>
       </View>
@@ -256,7 +258,7 @@ export function LineCard({
                   opacity: pressed ? 0.7 : 1,
                 })}
               >
-                <T v="smallStrong" muted style={{ fontSize: 11 }}>
+                <T v="smallStrong" muted style={{ fontSize: 13 }}>
                   MEASURED
                 </T>
                 <T v="bodyStrong" color={customerQty ? c.uncertain : undefined} numberOfLines={1}>
@@ -409,7 +411,27 @@ export function QuestionCard({
     case 'missing_qty':
       actions = group[0] ? (
         <>
-          <Button size="md" variant="primary" title="Enter the size" onPress={() => setMode('qty')} testID={`${testID}-qty`} />
+          {question.payload.sizeKey && question.payload.area && question.payload.unit === group[0].unit ? (
+            <Button
+              size="md"
+              variant="primary"
+              title={`Use my usual ${number(parseNonNeg(question.payload.area))} ${unitLabel(group[0].unit, group[0].eachLabel)}`}
+              onPress={() => run({ kind: 'qty', qty: question.payload.area ?? '' })}
+              testID={`${testID}-usual`}
+            />
+          ) : null}
+          <Button
+            size="md"
+            variant={question.payload.sizeKey && question.payload.area ? 'outline' : 'primary'}
+            title={question.payload.sizeKey && question.payload.area ? 'Enter a different size' : 'Enter the size'}
+            onPress={() => setMode('qty')}
+            testID={`${testID}-qty`}
+          />
+          {question.payload.sizeKey && !question.payload.area ? (
+            <T v="small" muted>
+              Saved as your usual {sizeKeyLabel(question.payload.sizeKey)}, offered in one tap next time.
+            </T>
+          ) : null}
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Button size="md" variant="outline" title="Measure on site" flex onPress={() => run({ kind: 'measure' })} testID={`${testID}-measure`} />
             <Button size="md" variant="outline" title="Include free" flex onPress={() => run({ kind: 'free' })} testID={`${testID}-free`} />
@@ -442,7 +464,15 @@ export function QuestionCard({
       );
       break;
     case 'extra_measure':
-      actions = (
+      actions =
+        question.payload.label === SIDES_LABEL ? (
+          <>
+            {group[0] && question.payload.area ? (
+              <Button size="md" variant="primary" title="Yes, price the second side too" onPress={() => run({ kind: 'second' })} testID={`${testID}-second`} />
+            ) : null}
+            <Button size="md" variant="outline" title="My rate covers both sides" onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
+          </>
+        ) : (
         <>
           {group[0] && question.payload.area ? (
             <>
@@ -452,7 +482,7 @@ export function QuestionCard({
           ) : null}
           <Button size="md" variant="ghost" title="Keep the first size" onPress={() => run({ kind: 'ignore' })} testID={`${testID}-ignore`} />
         </>
-      );
+        );
       break;
     case 'scope':
       actions = (
@@ -528,6 +558,7 @@ export function QuestionCard({
             suffix={group[0] ? unitLabel(group[0].unit, group[0].eachLabel) : undefined}
             autoFocus
             error={error}
+            testID={`${testID}-qty-input`}
           />
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Button size="md" variant="ghost" title="Back" flex onPress={() => setMode('idle')} />

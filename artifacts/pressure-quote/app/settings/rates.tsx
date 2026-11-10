@@ -1,9 +1,10 @@
 import React from 'react';
 import { View } from 'react-native';
-import { Card, Chip, Field, Screen, SectionLabel, Segmented, SERVICE_ICON, ServiceGlyph, StatefulAmount, T, ToggleRow } from '@/components/ui';
+import { Card, Chip, Field, Screen, SectionLabel, Segmented, SERVICE_ICON, ServiceGlyph, StatefulAmount, T, TextLink, ToggleRow } from '@/components/ui';
 import { parseNonNeg } from '@/lib/decimal';
 import { DEFAULT_TERMS, RATED_KINDS, SERVICE_META, shownKinds, unitFor } from '@/lib/defaults';
-import { perUnitLabel, unitLabel } from '@/lib/format';
+import { number, perUnitLabel, unitLabel } from '@/lib/format';
+import { sizeKeyLabel } from '@/lib/sizes';
 import { convertQuantity, convertRate } from '@/lib/geometry';
 import { useStore } from '@/lib/store';
 import type { QuantityType, RatedKind, ServiceRate, Settings, UnitSystem } from '@/lib/types';
@@ -118,10 +119,39 @@ export default function RatesScreen() {
         );
       })}
 
+      {Object.keys(s.savedSizes).length ? (
+        <>
+          <SectionLabel>Your usual sizes</SectionLabel>
+          <Card style={{ gap: 10 }} testID="saved-sizes">
+            <T v="small" muted>
+              Offered in one tap when a message names one, such as "2 car driveway". Saved from your own answers.
+            </T>
+            {Object.entries(s.savedSizes).map(([key, size]) => (
+              <View key={key} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <T v="body" style={{ flex: 1 }}>
+                  {sizeKeyLabel(key)}: {number(parseNonNeg(size.qty))} {unitLabel(size.unit, '')}
+                </T>
+                <TextLink
+                  title="Forget"
+                  onPress={() =>
+                    set((x) => {
+                      const next = { ...x.savedSizes };
+                      delete next[key];
+                      return { ...x, savedSizes: next };
+                    })
+                  }
+                  testID={`saved-size-forget-${key}`}
+                />
+              </View>
+            ))}
+          </Card>
+        </>
+      ) : null}
+
       <SectionLabel>Every visit</SectionLabel>
       <Card style={{ gap: 16 }}>
         <StatefulAmount label="Job minimum" state={s.minimum.state} amount={s.minimum.amount} onChange={(state, amount) => set((x) => ({ ...x, minimum: { state, amount } }))} testID="default-minimum" />
-        {s.minimum.state === 'known_value' ? <ToggleRow title="Charge tax on the minimum adjustment" value={s.minimumTaxable} onChange={(v) => set((x) => ({ ...x, minimumTaxable: v }))} /> : null}
+        {s.minimum.state === 'known_value' ? <ToggleRow title="Charge tax on the amount that brings it up to my minimum" value={s.minimumTaxable} onChange={(v) => set((x) => ({ ...x, minimumTaxable: v }))} /> : null}
         <StatefulAmount label="Trip charge" state={s.trip.state} amount={s.trip.amount} allowNA onChange={(state, amount) => set((x) => ({ ...x, trip: { ...x.trip, state, amount } }))} testID="default-trip" />
         {s.trip.state === 'known_value' ? <ToggleRow title="Charge tax on the trip" value={s.trip.taxable} onChange={(v) => set((x) => ({ ...x, trip: { ...x.trip, taxable: v } }))} /> : null}
       </Card>

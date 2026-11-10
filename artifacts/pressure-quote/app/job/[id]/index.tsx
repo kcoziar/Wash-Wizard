@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -28,6 +28,9 @@ export default function JobScreen() {
   const [picked, setPicked] = useState<PastCustomer | null>(null);
   const [showRequest, setShowRequest] = useState(false);
   const [moreKinds, setMoreKinds] = useState(false);
+  const { discardIfUntouched } = store;
+  // Leaving a blank new job without changing anything removes it.
+  useEffect(() => () => discardIfUntouched(id), [id, discardIfUntouched]);
 
   if (!store.ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
   if (!job || !calc) {
@@ -72,6 +75,13 @@ export default function JobScreen() {
   const resolve = (questionId: string, r: Resolution): string | null => {
     const res = resolveQuestion(job.draft, questionId, r, store.settings);
     if (!res.ok) return res.error;
+    // The first answer to "How big is your usual 2-car driveway?" is remembered for next time.
+    const q = job.draft.questions.find((x) => x.id === questionId);
+    const line = q ? res.draft.lines.find((l) => l.id === q.lineIds[0]) : undefined;
+    const key = q?.payload.sizeKey;
+    if (r.kind === 'qty' && key && line && !store.settings.savedSizes[key]) {
+      store.updateSettings((s) => ({ ...s, savedSizes: { ...s.savedSizes, [key]: { qty: r.qty.trim(), unit: line.unit } } }));
+    }
     store.updateJob(job.id, (j) => ({
       ...withDraft(j, reconcileQuestions(res.draft)),
       privateNotes: res.privateNote ? [j.privateNotes.trim(), res.privateNote].filter(Boolean).join('\n') : j.privateNotes,

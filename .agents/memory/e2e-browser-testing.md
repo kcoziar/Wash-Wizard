@@ -12,6 +12,9 @@ The Screenshot tool cannot tap, so flows (start quote, capture, create, paywall 
 - The home example card (`open-example`) only shows while there are no real jobs (or the example already exists), so a test that creates jobs first will not find it. Services beyond the first ones need `pick-more` / `add-more` first.
 - A fresh context opens the first-run setup, not Home: tap `welcome-skip-all` first (or drive the `welcome-*` steps to test setup).
 - expo-router keeps earlier stack screens in the DOM, hidden, so the same testID can match twice after navigating. Select with `[data-testid="x"] >> visible=true` or clicks time out on the hidden copy.
+- RN Web innerText follows textTransform, so uppercase section labels need case-insensitive matching. Data checks are more reliable via `localStorage` keys (`pwc:v1:settings`, `pwc:v1:meta`, `pwc:v1:job:*`).
+- A pasted customer size must be confirmed ("Looks right") before Create works.
+- flow8 (setup tax, blank-job discard, usual 2-car size, tax note, grouped issues), flow9 (create, then name change -> correction = free R2).
 - Scratch flows: flow.mjs (quote + free count), flow2 (capture, paywall, tools), flow3 (dark mode), flow4 (setup, rate from time, unit/basis switches, area tool), flow5 (recap, similar work, earlier customers, pasted 24x36), flow6 (example job, house+roof question, live business name), flow7 (setup chips, services picker). /tmp can be wiped; rebuild from these notes.
 
 **Why:** found while verifying the full build; the flows passed this way with zero console errors.

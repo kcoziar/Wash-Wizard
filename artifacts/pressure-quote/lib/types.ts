@@ -123,7 +123,7 @@ export interface Question {
   resolved: boolean;
   answer: string;
   /** from: 'operator' when the question came from the operator's own notes, so sizes it sets are not customer-supplied. */
-  payload: { area?: string; unit?: Unit; amount?: string; label?: string; from?: 'operator' };
+  payload: { area?: string; unit?: Unit; amount?: string; label?: string; from?: 'operator'; sizeKey?: string };
 }
 
 export interface Draft {
@@ -151,6 +151,8 @@ export interface QuoteDoc {
   validUntil: number | null;
   business: { name: string; phone: string; email: string; logo: string | null };
   customer: { name: string; address: string };
+  /** Printed under the total when the operator has not said whether they charge sales tax. Absent on older quotes. */
+  taxNote?: string;
   lines: { name: string; detail: string; qty: string; amount: number; included: boolean }[];
   excluded: string[];
   subtotal: number;
@@ -225,6 +227,11 @@ export interface Job {
   shares: ShareRecord[];
   outcome: Outcome | null;
   useForSuggestions: boolean;
+  /**
+   * Set once when the operator says a changed name or phone is the same customer, just corrected.
+   * Holds that customer's key; any further change of customer on this job is a separate visit.
+   */
+  correctedCustomer?: string;
 }
 
 export interface ServiceRate {
@@ -260,6 +267,13 @@ export interface Settings {
   customServices: SavedService[];
   /** Built-in services shown first on Home and on a job. The rest stay one tap away under "More". */
   services: RatedKind[];
+  /** The operator's own usual sizes ("2-car driveway" = 640 sq ft), saved when they first answer. Never shipped with values. */
+  savedSizes: Record<string, SavedSize>;
+}
+
+export interface SavedSize {
+  qty: string;
+  unit: Unit;
 }
 
 export interface SavedService {

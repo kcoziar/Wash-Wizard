@@ -12,7 +12,7 @@ import { applyAnswers, type RateAnswer, type SetupAnswers } from '@/lib/onboardi
 import { useStore } from '@/lib/store';
 import type { RatedKind, Unit } from '@/lib/types';
 
-const STEPS = ['What do you clean?', 'Your rates', 'Minimum and hourly target', 'Name on your quotes'];
+const STEPS = ['What do you clean?', 'Your rates', 'Minimum, tax and target', 'Name on your quotes'];
 
 /** Sizes for the live example only. Always labelled as examples and never saved. */
 const EXAMPLE_AREA: Partial<Record<RatedKind, { sqft: string; sqm: string }>> = {
@@ -48,10 +48,12 @@ export default function Welcome() {
   );
   const [minimum, setMinimum] = useState(s.minimum.state === 'known_value' ? s.minimum.amount : '');
   const [target, setTarget] = useState(s.ownerTarget.state === 'known_value' ? s.ownerTarget.rate : '');
+  const [taxCharge, setTaxCharge] = useState<'yes' | 'no' | ''>(s.tax.state === 'known_zero' ? 'no' : s.tax.state === 'known_value' ? 'yes' : '');
+  const [taxRate, setTaxRate] = useState(s.tax.state === 'known_value' ? s.tax.rate : '');
   const [name, setName] = useState(s.business.name);
   const [phone, setPhone] = useState(s.business.phone);
 
-  const answers: SetupAnswers = { services: kinds, rates, minimum, target, name, phone };
+  const answers: SetupAnswers = { services: kinds, rates, minimum, target, name, phone, tax: { charge: taxCharge, rate: taxRate } };
   // Services picked on the first step; everything when that step was skipped.
   const shown = kinds.length && !skipped.has(0) ? kinds : step === 0 ? [] : CORE_KINDS;
 
@@ -65,7 +67,7 @@ export default function Welcome() {
     });
     return { draft, calc: computeQuote(draft), settings };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s, kinds, rates, minimum, target, name, phone, skipped, step]);
+  }, [s, kinds, rates, minimum, target, name, phone, taxCharge, taxRate, skipped, step]);
 
   const leave = () => (router.canGoBack() ? router.back() : router.replace('/'));
   const finish = (skip: Set<number>) => {
@@ -182,6 +184,19 @@ export default function Welcome() {
             hint="A quote below this is raised to it, and the quote says so."
             testID="welcome-minimum"
           />
+          <View style={{ gap: 8 }}>
+            <T v="label">Do you charge sales tax?</T>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              <Chip label="No" selected={taxCharge === 'no'} onPress={() => setTaxCharge(taxCharge === 'no' ? '' : 'no')} testID="welcome-tax-no" />
+              <Chip label="Yes" selected={taxCharge === 'yes'} onPress={() => setTaxCharge(taxCharge === 'yes' ? '' : 'yes')} testID="welcome-tax-yes" />
+            </View>
+            {taxCharge === 'yes' ? (
+              <Field label="Tax rate" value={taxRate} onChangeText={setTaxRate} suffix="%" decimal maxDecimals={3} placeholder="For example 8.25" testID="welcome-tax-rate" />
+            ) : null}
+            <T v="small" muted>
+              {taxCharge === 'no' ? 'Quotes show no tax line.' : taxCharge === 'yes' ? 'Added to taxable lines on every quote. You can change it per job.' : 'Until you answer, quotes say "Plus any applicable sales tax" under the total.'}
+            </T>
+          </View>
           <Field
             label="What your time should earn (optional)"
             value={target}

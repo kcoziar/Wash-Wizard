@@ -42,7 +42,9 @@ interface StoreValue {
   peekMeta: () => Meta;
   updateSettings: (fn: (s: Settings) => Settings) => void;
   updateMeta: (fn: (m: Meta) => Meta) => void;
-  createJob: (draft: Draft, opts?: { sample?: boolean; request?: string }) => Job;
+  /** `fresh`: a blank job started from Home. Left untouched, it is discarded on leaving and its number reused. */
+  createJob: (draft: Draft, opts?: { sample?: boolean; request?: string; fresh?: boolean }) => Job;
+  discardIfUntouched: (jobId: string) => void;
   updateDraft: (jobId: string, fn: (d: Draft) => Draft) => void;
   updateJob: (jobId: string, fn: (j: Job) => Job) => void;
   deleteJob: (jobId: string) => Promise<void>;
@@ -84,6 +86,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const metaRef = useRef<Meta>(meta);
   const settingsRef = useRef<Settings>(settings);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const freshIds = useRef(new Set<string>());
 
   const addIssue = useCallback((text: string) => setIssues((x) => (x.includes(text) ? x : [...x, text])), []);
 
@@ -191,10 +194,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const createJob = useCallback(
-    (draft: Draft, opts: { sample?: boolean; request?: string } = {}) => {
+    (draft: Draft, opts: { sample?: boolean; request?: string; fresh?: boolean } = {}) => {
       const number = opts.sample ? 0 : metaRef.current.nextNumber;
       const job = newJob(draft, number, opts);
       if (!loaded.current) return job;
+      if (opts.fresh) freshIds.current.add(job.id);
       if (!opts.sample) updateMeta((m) => ({ ...m, nextNumber: m.nextNumber + 1 }));
       setJobsBoth([job, ...jobsRef.current]);
       saveJob(job).catch(() => addIssue('The new job could not be saved yet. Keep the app open and try again.'));
@@ -230,6 +234,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       await removeJob(jobId);
     },
     [setJobsBoth],
+  );
+
+  // Opening "New job" and backing out without typing anything leaves no empty job behind and does
+  // not use up a quote number.
+  const discardIfUntouched = useCallback(
+    (jobId: string) => {
+      const fresh = freshIds.current.delete(jobId);
+      const job = jobsRef.current.find((j) => j.id === jobId);
+      if (!fresh || !job || job.revisions.length || job.request || job.updatedAt !== job.createdAt) return;
+      deleteJob(jobId).catch(() => undefined);
+      if (job.number > 0 && metaRef.current.nextNumber === job.number + 1) updateMeta((m) => ({ ...m, nextNumber: job.number }));
+    },
+    [deleteJob, updateMeta],
   );
 
   // Duplicate copies what the operator is looking at now: the current draft, not the last quote.
@@ -309,7 +326,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     await deleteEverything();
     const cachesCleared = clearAppCaches();
     const s = defaultSettings();
-    const m = { ...defaultMeta(), nextNumber: 1, onboarded: true };
+    // Quote numbers keep counting after Delete all, so a new quote never reuses a number a customer already has.
+    const m = { ...defaultMeta(), nextNumber: metaRef.current.nextNumber, onboarded: true };
     settingsRef.current = s;
     metaRef.current = m;
     setSettings(s);
@@ -340,6 +358,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       updateSettings,
       updateMeta,
       createJob,
+      discardIfUntouched,
       updateDraft,
       updateJob,
       deleteJob,
@@ -352,7 +371,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       deleteAll,
       noteMeaningful,
     }),
-    [ready, loadError, reload, firstRun, issues, settings, meta, jobs, ledger, getJob, peekJob, peekSettings, peekMeta, updateSettings, updateMeta, createJob, updateDraft, updateJob, deleteJob, duplicateJob, similarJob, separateVisit, flush, commit, addImported, deleteAll, noteMeaningful],
+    [ready, loadError, reload, firstRun, issues, settings, meta, jobs, ledger, getJob, peekJob, peekSettings, peekMeta, updateSettings, updateMeta, createJob, discardIfUntouched, updateDraft, updateJob, deleteJob, duplicateJob, similarJob, separateVisit, flush, commit, addImported, deleteAll, noteMeaningful],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

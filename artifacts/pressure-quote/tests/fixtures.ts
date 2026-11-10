@@ -10,7 +10,7 @@ import { defaultSettings, newDraft, newLine, sampleDraft } from '../lib/defaults
 import { draftFromRequest, guessMode, parseRequest } from '../lib/parser';
 import { confirmQuantities, jobIssues, reconcileQuestions, resolveQuestion } from '../lib/resolve';
 import { buildQuoteDoc, quoteFileName, quoteSmsMessage, quoteTitle, renderQuoteHtml, renderQuoteText } from '../lib/document';
-import { decideAccess, isNewVisit } from '../lib/access';
+import { customerKey, decideAccess, isNewVisit } from '../lib/access';
 import { money, quoteReference, smsAddress } from '../lib/format';
 import type { Draft, Line, Part } from '../lib/types';
 
@@ -599,13 +599,21 @@ test('Access policy follows the ownership matrix', () => {
   assert.equal(decideAccess({ hasRevision: true, newVisit: true, sample: false, status: 'active', freeUsed: 3 }).kind, 'revision');
   assert.equal(decideAccess({ hasRevision: true, newVisit: false, sample: false, status: 'none', freeUsed: 3 }).kind, 'revision');
 });
-test('A new visit needs both a different customer and a different address', () => {
-  const was = { name: 'Sarah Jones', address: '12 Oak St' };
-  assert.equal(isNewVisit(was, { name: 'Sarah Jones', address: '12 Oak Street, Unit 2' }), false);
-  assert.equal(isNewVisit(was, { name: 'Sara Jones', address: '12 Oak St' }), false);
-  assert.equal(isNewVisit(was, { name: 'Mike Patel', address: '90 Pine Ave' }), true);
-  assert.equal(isNewVisit(was, { name: '', address: '90 Pine Ave' }), false);
-  assert.equal(isNewVisit(null, { name: 'Mike Patel', address: '90 Pine Ave' }), false);
+test('A new visit is a different customer name or phone, never decided by the address', () => {
+  const was = { name: 'Sarah Jones', phone: '(555) 201-3344' };
+  assert.equal(isNewVisit(was, { name: 'Sarah Jones', phone: '555-201-3344' }), false);
+  assert.equal(isNewVisit(was, { name: 'Sara Jones', phone: '' }), false);
+  assert.equal(isNewVisit(was, { name: 'sarah  jones', phone: '+1 555 201 3344' }), false);
+  // A different customer with no address on either quote is still a different visit.
+  assert.equal(isNewVisit(was, { name: 'Mike Patel', phone: '' }), true);
+  assert.equal(isNewVisit(was, { name: 'Sarah Jones', phone: '555-777-0000' }), true);
+  // Filling in a blank is not a change.
+  assert.equal(isNewVisit({ name: '', phone: '' }, { name: 'Mike Patel', phone: '555-777-0000' }), false);
+  assert.equal(isNewVisit(was, { name: '', phone: '' }), false);
+  assert.equal(isNewVisit(null, { name: 'Mike Patel', phone: '' }), false);
+  // A confirmed correction is keyed to exactly that customer.
+  assert.equal(customerKey({ name: 'Mike  Patel', phone: '(555) 777-0000' }), customerKey({ name: 'mike patel', phone: '555.777.0000' }));
+  assert.ok(customerKey({ name: 'Mike Patel', phone: '' }) !== customerKey({ name: 'Jo Smith', phone: '' }));
 });
 test('Text message for a quote uses only the customer document', () => {
   const d = sampleDraft(settings);
@@ -728,6 +736,61 @@ test('Operator notes for the new services set the rate', () => {
   assert.equal(computeQuote(d).lines[0].amount, 72000);
   const f = draftFromRequest(parseRequest('fence 150 linear ft at 1.25 a foot', { mode: 'operator' }), settings);
   assert.equal(computeQuote(f).lines[0].amount, 18750);
+});
+
+// ---------- Sending, tax note and saved sizes ----------
+test('The file name says whose quote it is; the text closes with the operator\'s own note', () => {
+  const d = sampleDraft(settings);
+  d.customer.name = 'Sarah Jones';
+  d.customerNote = 'Text back to pick a day.\nThanks for asking us.';
+  const biz = { name: 'Café Clean Co / LLC', phone: '', email: '', logo: null };
+  const doc = buildQuoteDoc({ draft: d, calc: computeQuote(d), business: biz, reference: 'Q-0007', issuedAt: 1_700_000_000_000, sample: false });
+  assert.equal(quoteFileName(doc), 'Cafe Clean Co LLC Quote Q-0007.pdf');
+  assert.equal(quoteFileName({ ...doc, business: { ...doc.business, name: '' } }), 'Quote Q-0007.pdf');
+  const msg = quoteSmsMessage(doc);
+  assert.ok(msg.includes('. Text back to pick a day. - Café Clean Co / LLC'), msg);
+  assert.ok(!msg.includes('Thanks for asking'), msg);
+  d.customerNote = '';
+  const bare = quoteSmsMessage(buildQuoteDoc({ draft: d, calc: computeQuote(d), business: biz, reference: 'Q-0007', issuedAt: 1, sample: false }));
+  assert.ok(!bare.includes('Reply YES'), bare);
+});
+test('Until the operator says whether they charge tax, the quote says so under the total', () => {
+  const d = sampleDraft(settings);
+  d.pricing.tax = { state: 'unknown', rate: '', label: 'Sales tax', source: 'saved' };
+  const doc = buildQuoteDoc({ draft: d, calc: computeQuote(d), business: { name: 'Clean Co', phone: '', email: '', logo: null }, reference: 'Q-0001', issuedAt: 1, sample: false });
+  assert.equal(doc.taxNote, 'Plus any applicable sales tax');
+  assert.ok(renderQuoteHtml(doc).includes('Plus any applicable sales tax'));
+  assert.ok(renderQuoteText(doc).includes('Plus any applicable sales tax'));
+  d.pricing.tax = { state: 'known_zero', rate: '', label: 'Sales tax', source: 'operator' };
+  const none = buildQuoteDoc({ draft: d, calc: computeQuote(d), business: { name: 'Clean Co', phone: '', email: '', logo: null }, reference: 'Q-0001', issuedAt: 1, sample: false });
+  assert.equal(none.taxNote, undefined);
+  assert.ok(!renderQuoteHtml(none).includes('applicable sales tax'));
+});
+test('An empty line is one item to finish, not two', () => {
+  const d = newDraft({ ...settings, rates: { ...settings.rates, driveway: { ...settings.rates.driveway, rate: '' } } }, ['driveway']);
+  const issues = jobIssues(d, computeQuote(d));
+  const forLine = issues.filter((i) => i.lineId === d.lines[0].id);
+  assert.equal(forLine.length, 1, JSON.stringify(issues));
+  assert.ok(forLine[0].text.includes('add a size and your rate'), forLine[0].text);
+});
+test('"2 car driveway" asks once for the operator\'s usual size, then offers it', () => {
+  const parsed = parseRequest('Can you clean my two car driveway?');
+  const first = draftFromRequest(parsed, settings);
+  const q = first.questions.find((x) => x.kind === 'missing_qty');
+  assert.ok(q, 'a size question');
+  assert.equal(q?.payload.sizeKey, 'driveway:2car');
+  assert.equal(q?.prompt, 'How big is your usual 2-car driveway?');
+  assert.equal(q?.payload.area, undefined, 'never a made-up size');
+  const saved = { ...settings, savedSizes: { 'driveway:2car': { qty: '640', unit: 'sqft' as const } } };
+  const next = draftFromRequest(parseRequest('double driveway please'), saved);
+  const q2 = next.questions.find((x) => x.kind === 'missing_qty');
+  assert.equal(q2?.payload.area, '640');
+  assert.equal(q2?.prompt, 'Use your usual 2-car driveway size?');
+  assert.equal(next.lines[0].qty, '', 'offered, not filled in');
+  // A saved size in other units is not offered.
+  const metric = draftFromRequest(parseRequest('2 car driveway'), { ...saved, savedSizes: { 'driveway:2car': { qty: '60', unit: 'sqm' as const } } });
+  assert.equal(metric.questions.find((x) => x.kind === 'missing_qty')?.payload.area, undefined);
+  assert.equal(draftFromRequest(parseRequest('driveway please'), saved).questions.find((x) => x.kind === 'missing_qty')?.payload.sizeKey, undefined);
 });
 
 test('Formatting', () => {

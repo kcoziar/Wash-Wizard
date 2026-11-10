@@ -106,7 +106,7 @@ export default function HomeScreen() {
   const start = () => {
     if (navigating.current) return;
     navigating.current = true;
-    const job = store.createJob(newDraft(store.settings, picked));
+    const job = store.createJob(newDraft(store.settings, picked), { fresh: true });
     setPicked([]);
     setShowMore(false);
     haptic('success');

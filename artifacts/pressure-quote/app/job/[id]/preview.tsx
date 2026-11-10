@@ -9,6 +9,7 @@ import { Banner, Button, Card, Chip, EmptyState, Field, IconButton, Screen, Sect
 import { useColors } from '@/hooks/useColors';
 import { date, makeId, money, shortDate } from '@/lib/format';
 import { track, trackQuoteCreated } from '@/lib/analytics';
+import { customerKey } from '@/lib/access';
 import { canText, copyText, printDoc, sharePdf, shareText, smsAddress, textQuote, type ShareResult } from '@/lib/output';
 import { takeResume } from '@/lib/resume';
 import { useSubscription } from '@/lib/revenuecat';
@@ -118,14 +119,25 @@ export default function PreviewScreen() {
     return res;
   };
 
-  /** Messages opens with the number, the PDF and a short note. Nothing is marked Sent here. */
+  /** Messages said the operator pressed Send: the job is marked Sent without asking. */
+  const markSentFromMessages = () => {
+    if (!job) return;
+    store.updateJob(job.id, (j) => ({ ...j, status: j.status === 'quoted' || j.status === 'draft' ? 'sent' : j.status }));
+    setNotice({ tone: 'success', text: firstName ? `Sent to ${firstName}` : 'Sent from Messages' });
+  };
+
+  /** Messages opens with the number, the PDF and a short note. */
   const sendByText = async (revision: Revision, pdfUri?: string | null): Promise<'asked' | 'done'> => {
     if (!smsTo) return 'done';
     const r = await textQuote(smsTo, revision.doc, pdfUri ?? null);
     track('text_send_used');
     record(revision.id, 'sms', r === 'sent' ? 'sent' : r === 'cancelled' ? 'cancelled' : r === 'failed' ? 'failed' : 'opened');
     if (r === 'failed') setNotice({ tone: 'warn', text: 'Messages did not open. Share the PDF instead.' });
-    if (r === 'sent' || r === 'unknown') {
+    if (r === 'sent') {
+      markSentFromMessages();
+      return 'done';
+    }
+    if (r === 'unknown') {
       setAskSent(revision);
       return 'asked';
     }
@@ -181,7 +193,7 @@ export default function PreviewScreen() {
         return;
       }
       if (canSms) {
-        if ((await sendByText(res.revision, res.pdfUri)) === 'done') afterShareFlow(res.revision, false);
+        if ((await sendByText(res.revision, res.pdfUri)) === 'done') afterShareFlow(res.revision, true);
         return;
       }
       let shared: ShareResult;
@@ -270,7 +282,8 @@ export default function PreviewScreen() {
                       track('text_send_used');
                       record(viewing.id, 'sms', r === 'sent' ? 'sent' : r === 'cancelled' ? 'cancelled' : r === 'failed' ? 'failed' : 'opened');
                       if (r === 'failed') setNotice({ tone: 'warn', text: 'Messages did not open. Share the PDF instead.' });
-                      else if ((r === 'sent' || r === 'unknown') && job.status === 'quoted') setAskSent(viewing);
+                      else if (r === 'sent') markSentFromMessages();
+                      else if (r === 'unknown' && job.status === 'quoted') setAskSent(viewing);
                     } finally {
                       setBusy(false);
                     }
@@ -470,7 +483,7 @@ export default function PreviewScreen() {
       <Banner
         tone="info"
         icon="copy"
-        title="This is a different customer and address"
+        title="This looks like a different customer"
         body={`Corrections to ${latest?.reference ?? 'a quote'} are free. A different visit gets its own quote, and ${latest?.reference ?? 'the original'} stays as it was.`}
         testID="access-new-visit"
       />
@@ -562,8 +575,8 @@ export default function PreviewScreen() {
       <Sheet
         visible={newVisit}
         onClose={() => setNewVisit(false)}
-        title="Start a separate quote?"
-        body={`${job.draft.customer.name.trim() || 'This customer'} gets a new quote of their own with everything you entered. ${latest?.reference ?? 'The original quote'} goes back to what was sent.`}
+        title="Different customer, or a correction?"
+        body={`The name or phone number changed since ${latest?.reference ?? 'the last quote'}. A different customer gets a new quote of their own with everything you entered, and ${latest?.reference ?? 'the original'} goes back to what was sent.${job.correctedCustomer ? ' The customer on this job has already been corrected once.' : ''}`}
         testID="new-visit-sheet"
         actions={
           <>
@@ -577,6 +590,18 @@ export default function PreviewScreen() {
               }}
               testID="new-visit-confirm"
             />
+            {!job.correctedCustomer ? (
+              <Button
+                variant="outline"
+                title="Same customer, just a correction"
+                onPress={() => {
+                  setNewVisit(false);
+                  const key = customerKey(job.draft.customer);
+                  store.updateJob(job.id, (j) => ({ ...j, correctedCustomer: key }));
+                }}
+                testID="new-visit-correction"
+              />
+            ) : null}
             <Button variant="ghost" title="Keep editing" onPress={() => setNewVisit(false)} />
           </>
         }

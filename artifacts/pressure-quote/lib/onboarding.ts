@@ -9,6 +9,8 @@ export type SetupAnswers = {
   rates: Partial<Record<RatedKind, RateAnswer>>;
   minimum: string;
   target: string;
+  /** "Do you charge sales tax?": unanswered leaves the quote saying "Plus any applicable sales tax". */
+  tax?: { charge: 'yes' | 'no' | ''; rate: string };
   name: string;
   phone: string;
 };
@@ -46,6 +48,8 @@ export function applyAnswers(base: Settings, a: SetupAnswers, skipped: ReadonlyS
   if (!skipped.has(SETUP_STEP.minimumAndTarget)) {
     if (positive(a.minimum)) next.minimum = { state: 'known_value', amount: a.minimum };
     if (positive(a.target)) next.ownerTarget = { state: 'known_value', rate: a.target };
+    if (a.tax?.charge === 'no') next.tax = { ...base.tax, state: 'known_zero', rate: '' };
+    else if (a.tax?.charge === 'yes' && positive(a.tax.rate)) next.tax = { ...base.tax, state: 'known_value', rate: a.tax.rate.trim() };
   }
   if (!skipped.has(SETUP_STEP.business)) {
     const name = a.name.trim();
